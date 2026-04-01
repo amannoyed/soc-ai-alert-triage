@@ -2,13 +2,20 @@ import joblib
 import pandas as pd
 import os
 
-# Load model
+# Paths
 base_path = os.path.dirname(os.path.dirname(__file__))
-model_path = os.path.join(base_path, "model", "model.pkl")
+model_dir = os.path.join(base_path, "model")
+model_path = os.path.join(model_dir, "model.pkl")
 
+# 🔥 Auto-create model if missing
+if not os.path.exists(model_path):
+    os.makedirs(model_dir, exist_ok=True)
+    os.system("python src/train_model.py")
+
+# Load model
 model = joblib.load(model_path)
 
-# 🔥 Expanded Threat Intelligence
+# 🔥 Threat Intelligence
 malicious_ips = [
     "10.0.0.5",
     "45.33.32.1",
@@ -26,7 +33,6 @@ def explain_alert(data):
 
     if data["failed_logins"] > 25:
         reasons.append("Extremely high failed login attempts")
-
     elif data["failed_logins"] > 10:
         reasons.append("Moderate failed login attempts")
 
@@ -56,11 +62,9 @@ def explain_alert(data):
 
     return " | ".join(reasons)
 
-
 def predict_alert(data, ip="192.168.1.1"):
     df = pd.DataFrame([data])
 
-    # Ensure all expected columns exist (MODEL SAFE)
     expected_columns = model.feature_names_in_
 
     for col in expected_columns:
@@ -71,7 +75,6 @@ def predict_alert(data, ip="192.168.1.1"):
 
     prediction = model.predict(df)[0]
 
-    # 🔥 Advanced severity logic
     severity = "Low"
 
     if data["failed_logins"] > 25:
@@ -96,37 +99,3 @@ def predict_alert(data, ip="192.168.1.1"):
         result = f"✅ Benign Activity ({severity} Risk)"
 
     return result, ip_status, explanation
-
-
-# 🔥 TEST BLOCK
-if __name__ == "__main__":
-    test_data = {
-        "failed_logins": 30,
-
-        # Locations
-        "location_India": 0,
-        "location_Russia": 1,
-        "location_US": 0,
-        "location_China": 0,
-        "location_Germany": 0,
-        "location_Brazil": 0,
-        "location_UK": 0,
-        "location_North Korea": 0,
-
-        # Devices
-        "device_Windows": 0,
-        "device_Linux": 1,
-
-        # Attack types
-        "alert_type_Brute Force": 1,
-        "alert_type_Normal Login": 0,
-        "alert_type_Credential Stuffing": 0,
-        "alert_type_Password Spray": 0,
-        "alert_type_Suspicious Login": 0,
-    }
-
-    result, ip_status, explanation = predict_alert(test_data, "10.0.0.5")
-
-    print(result)
-    print(ip_status)
-    print("Reason:", explanation)
