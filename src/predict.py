@@ -3,19 +3,16 @@ import pandas as pd
 import os
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+from preprocess import load_data
 
 # Paths
 base_path = os.path.dirname(os.path.dirname(__file__))
-data_path = os.path.join(base_path, "data", "sample_logs.csv")
 model_dir = os.path.join(base_path, "model")
 model_path = os.path.join(model_dir, "model.pkl")
 
-# 🔥 TRAIN MODEL SAFELY
+# 🔥 TRAIN USING CLEAN DATA
 def train_model():
-    df = pd.read_csv(data_path)
-
-    # 🔥 Convert categorical → numeric
-    df = pd.get_dummies(df)
+    df = load_data()  # ✅ USE PREPROCESS
 
     X = df.drop("label", axis=1)
     y = df["label"]
