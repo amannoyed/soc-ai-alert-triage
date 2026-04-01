@@ -1,21 +1,26 @@
 import joblib
 import pandas as pd
 import os
+import subprocess
 
-# Paths
+# Base paths
 base_path = os.path.dirname(os.path.dirname(__file__))
 model_dir = os.path.join(base_path, "model")
 model_path = os.path.join(model_dir, "model.pkl")
 
-# 🔥 Auto-create model if missing
+train_script = os.path.join(base_path, "src", "train_model.py")
+
+# 🔥 Ensure model exists
 if not os.path.exists(model_path):
     os.makedirs(model_dir, exist_ok=True)
-    os.system("python src/train_model.py")
+
+    # Run training using subprocess (more reliable)
+    subprocess.run(["python", train_script], check=True)
 
 # Load model
 model = joblib.load(model_path)
 
-# 🔥 Threat Intelligence
+# Threat intel
 malicious_ips = [
     "10.0.0.5",
     "45.33.32.1",
@@ -24,9 +29,7 @@ malicious_ips = [
 ]
 
 def check_ip(ip):
-    if ip in malicious_ips:
-        return "⚠️ Known Malicious IP"
-    return "✅ Clean IP"
+    return "⚠️ Known Malicious IP" if ip in malicious_ips else "✅ Clean IP"
 
 def explain_alert(data):
     reasons = []
@@ -65,6 +68,7 @@ def explain_alert(data):
 def predict_alert(data, ip="192.168.1.1"):
     df = pd.DataFrame([data])
 
+    # Match training features
     expected_columns = model.feature_names_in_
 
     for col in expected_columns:
@@ -75,6 +79,7 @@ def predict_alert(data, ip="192.168.1.1"):
 
     prediction = model.predict(df)[0]
 
+    # Severity logic
     severity = "Low"
 
     if data["failed_logins"] > 25:
@@ -93,9 +98,10 @@ def predict_alert(data, ip="192.168.1.1"):
     ip_status = check_ip(ip)
     explanation = explain_alert(data)
 
-    if prediction == 1:
-        result = f"🚨 Threat Detected ({severity} Severity)"
-    else:
-        result = f"✅ Benign Activity ({severity} Risk)"
+    result = (
+        f"🚨 Threat Detected ({severity} Severity)"
+        if prediction == 1
+        else f"✅ Benign Activity ({severity} Risk)"
+    )
 
     return result, ip_status, explanation
