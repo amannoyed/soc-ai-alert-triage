@@ -1,24 +1,37 @@
 import joblib
 import pandas as pd
 import os
-import subprocess
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
 # Base paths
 base_path = os.path.dirname(os.path.dirname(__file__))
+data_path = os.path.join(base_path, "data", "sample_logs.csv")
 model_dir = os.path.join(base_path, "model")
 model_path = os.path.join(model_dir, "model.pkl")
 
-train_script = os.path.join(base_path, "src", "train_model.py")
+# 🔥 TRAIN MODEL DIRECTLY IF NOT EXISTS
+def train_model():
+    df = pd.read_csv(data_path)
 
-# 🔥 Ensure model exists
-if not os.path.exists(model_path):
+    X = df.drop("label", axis=1)
+    y = df["label"]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+    model = RandomForestClassifier()
+    model.fit(X_train, y_train)
+
     os.makedirs(model_dir, exist_ok=True)
+    joblib.dump(model, model_path)
 
-    # Run training using subprocess (more reliable)
-    subprocess.run(["python", train_script], check=True)
+    return model
 
-# Load model
-model = joblib.load(model_path)
+# Ensure model exists
+if not os.path.exists(model_path):
+    model = train_model()
+else:
+    model = joblib.load(model_path)
 
 # Threat intel
 malicious_ips = [
@@ -68,7 +81,6 @@ def explain_alert(data):
 def predict_alert(data, ip="192.168.1.1"):
     df = pd.DataFrame([data])
 
-    # Match training features
     expected_columns = model.feature_names_in_
 
     for col in expected_columns:
@@ -79,7 +91,6 @@ def predict_alert(data, ip="192.168.1.1"):
 
     prediction = model.predict(df)[0]
 
-    # Severity logic
     severity = "Low"
 
     if data["failed_logins"] > 25:
