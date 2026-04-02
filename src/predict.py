@@ -10,9 +10,9 @@ base_path = os.path.dirname(os.path.dirname(__file__))
 model_dir = os.path.join(base_path, "model")
 model_path = os.path.join(model_dir, "model.pkl")
 
-# 🔥 TRAIN USING CLEAN DATA
+# 🔥 TRAIN MODEL
 def train_model():
-    df = load_data()  # ✅ USE PREPROCESS
+    df = load_data()
 
     X = df.drop("label", axis=1)
     y = df["label"]
@@ -27,56 +27,76 @@ def train_model():
 
     return model
 
-# Ensure model exists
 if not os.path.exists(model_path):
     model = train_model()
 else:
     model = joblib.load(model_path)
 
-# Threat intel
-malicious_ips = [
-    "10.0.0.5",
-    "45.33.32.1",
-    "185.220.101.1",
-    "103.21.244.0"
-]
+# 🔥 THREAT INTEL
+malicious_ips = ["10.0.0.5", "45.33.32.1", "185.220.101.1"]
 
 def check_ip(ip):
     return "⚠️ Known Malicious IP" if ip in malicious_ips else "✅ Clean IP"
 
-def explain_alert(data):
-    reasons = []
+# 🔥 RISK SCORING ENGINE (SOC STYLE)
+def calculate_risk_score(data):
+    score = 0
 
-    if data["failed_logins"] > 25:
-        reasons.append("Extremely high failed login attempts")
-    elif data["failed_logins"] > 10:
-        reasons.append("Moderate failed login attempts")
+    # Failed logins weight
+    score += data["failed_logins"] * 2
 
+    # Location risk
     if data.get("location_Russia", 0):
-        reasons.append("Login from Russia (high-risk region)")
-
+        score += 20
     if data.get("location_China", 0):
-        reasons.append("Login from China (suspicious pattern)")
-
+        score += 25
     if data.get("location_North Korea", 0):
-        reasons.append("Login from North Korea (critical alert)")
+        score += 40
+
+    # Attack types
+    if data.get("alert_type_Brute Force", 0):
+        score += 25
+    if data.get("alert_type_Credential Stuffing", 0):
+        score += 30
+    if data.get("alert_type_Password Spray", 0):
+        score += 20
+
+    return min(score, 100)
+
+# 🔥 SEVERITY FROM SCORE
+def get_severity(score):
+    if score >= 80:
+        return "Critical"
+    elif score >= 60:
+        return "High"
+    elif score >= 40:
+        return "Medium"
+    else:
+        return "Low"
+
+# 🔥 MITRE ATT&CK MAPPING
+def map_mitre(data):
+    techniques = []
 
     if data.get("alert_type_Brute Force", 0):
-        reasons.append("Brute force attack detected")
+        techniques.append("T1110 - Brute Force")
 
     if data.get("alert_type_Credential Stuffing", 0):
-        reasons.append("Credential stuffing behavior detected")
+        techniques.append("T1110.004 - Credential Stuffing")
 
     if data.get("alert_type_Password Spray", 0):
-        reasons.append("Password spray attack pattern")
+        techniques.append("T1110.003 - Password Spraying")
 
     if data.get("alert_type_Suspicious Login", 0):
-        reasons.append("Unusual login behavior")
+        techniques.append("T1078 - Valid Accounts")
 
-    if not reasons:
-        reasons.append("Normal login behavior")
+    return techniques
 
-    return " | ".join(reasons)
+# 🔥 ANOMALY DETECTION
+def detect_anomaly(data):
+    if data["failed_logins"] > 30:
+        return "⚠️ Anomalous Behavior Detected"
+    return "Normal Behavior"
 
 def predict_alert(data, ip="192.168.1.1"):
     df = pd.DataFrame([data])
@@ -91,28 +111,17 @@ def predict_alert(data, ip="192.168.1.1"):
 
     prediction = model.predict(df)[0]
 
-    severity = "Low"
-
-    if data["failed_logins"] > 25:
-        severity = "Critical"
-    elif data["failed_logins"] > 15:
-        severity = "High"
-    elif data["failed_logins"] > 8:
-        severity = "Medium"
-
-    if data.get("location_North Korea", 0):
-        severity = "Critical"
-
-    if data.get("alert_type_Credential Stuffing", 0):
-        severity = "High"
-
+    # 🔥 SOC LOGIC
+    risk_score = calculate_risk_score(data)
+    severity = get_severity(risk_score)
+    mitre = map_mitre(data)
+    anomaly = detect_anomaly(data)
     ip_status = check_ip(ip)
-    explanation = explain_alert(data)
 
     result = (
-        f"🚨 Threat Detected ({severity} Severity)"
+        f"🚨 Threat Detected ({severity})"
         if prediction == 1
-        else f"✅ Benign Activity ({severity} Risk)"
+        else f"✅ Benign Activity ({severity})"
     )
 
-    return result, ip_status, explanation
+    return result, risk_score, severity, mitre, anomaly, ip_status
