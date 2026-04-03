@@ -1,3 +1,4 @@
+from correlation_engine import correlate_events
 import streamlit as st
 import sys
 import os
@@ -70,6 +71,15 @@ if uploaded_file:
         f.write(uploaded_file.read())
 
     parsed_logs = parse_evtx("temp.evtx")
+
+    alerts = correlate_events(parsed_logs)
+
+st.subheader("🧠 Correlated Threat Detection")
+
+for alert in alerts:
+    st.write(f"🚨 {alert['type']} ({alert['severity']})")
+    st.write(alert["description"])
+    st.write("---")
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
