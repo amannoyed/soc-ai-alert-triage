@@ -12,23 +12,61 @@ from correlation_engine import correlate_events
 
 st.set_page_config(page_title="SOC Dashboard", layout="wide")
 
+# ---------------- 🔥 DARK SOC THEME ---------------- #
+
+st.markdown("""
+<style>
+body {
+    background-color: #0E1117;
+}
+.block-container {
+    padding-top: 2rem;
+}
+.metric-card {
+    background-color: #161B22;
+    padding: 15px;
+    border-radius: 10px;
+    border: 1px solid #30363D;
+}
+.section {
+    background-color: #161B22;
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px solid #30363D;
+    margin-bottom: 20px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🛡️ SOC AI Threat Intelligence Dashboard")
 
-# ---------------- MANUAL INPUT ---------------- #
+# ---------------- 🔥 KPI PANEL ---------------- #
 
-st.header("🔧 Manual Alert Simulation")
+st.markdown("### 🚨 SOC Overview")
 
-col1, col2 = st.columns(2)
+k1, k2, k3, k4 = st.columns(4)
 
-with col1:
-    failed_logins = st.slider("Failed Logins", 0, 50)
-    ip = st.text_input("Source IP", "8.8.8.8")
+k1.metric("Alerts Today", "128")
+k2.metric("Critical Threats", "7")
+k3.metric("Suspicious IPs", "23")
+k4.metric("System Status", "Active")
 
-with col2:
-    location = st.selectbox("Location", ["India","US","Russia","China","North Korea"])
-    alert_type = st.selectbox("Attack Type", [
-        "Normal Login","Brute Force","Credential Stuffing","Password Spray","Suspicious Activity"
-    ])
+# ---------------- 🔧 MANUAL INPUT ---------------- #
+
+st.markdown("### 🔧 Manual Simulation")
+
+with st.container():
+    col1, col2 = st.columns(2)
+
+    with col1:
+        failed_logins = st.slider("Failed Logins", 0, 50)
+        ip = st.text_input("Source IP", "8.8.8.8")
+
+    with col2:
+        location = st.selectbox("Location", ["India","US","Russia","China","North Korea"])
+        alert_type = st.selectbox("Attack Type", [
+            "Normal Login","Brute Force","Credential Stuffing","Password Spray","Suspicious Activity"
+        ])
 
 input_data = {
     "failed_logins": failed_logins,
@@ -44,28 +82,27 @@ input_data = {
     "alert_type_Suspicious Activity": 1 if alert_type=="Suspicious Activity" else 0,
 }
 
-if st.button("🚨 Analyze Manual Input"):
+if st.button("🚨 Analyze"):
     result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data, ip)
 
-    st.subheader("🔍 Result")
-    st.write(result)
+    st.markdown("### 🔍 Detection Result")
 
-    col1, col2 = st.columns(2)
-    col1.metric("Risk Score", score)
-    col2.metric("Severity", severity)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Risk Score", score)
+    c2.metric("Severity", severity)
+    c3.metric("IP Status", ip_status)
 
-    st.write("🌐 IP Status:", ip_status)
     st.write("🧠 Behavior:", anomaly)
 
-    st.subheader("🎯 MITRE ATT&CK")
+    st.markdown("#### 🎯 MITRE Mapping")
     for t in mitre:
         st.write(f"- {t}")
 
-# ---------------- LOG INGESTION ---------------- #
+# ---------------- 📂 LOG INGESTION ---------------- #
 
-st.header("📂 Upload EVTX Logs (Real SOC Data)")
+st.markdown("### 📂 Log Ingestion")
 
-uploaded_file = st.file_uploader("Upload Windows EVTX Log File", type=["evtx"])
+uploaded_file = st.file_uploader("Upload EVTX File", type=["evtx"])
 
 if uploaded_file:
     with open("temp.evtx", "wb") as f:
@@ -75,48 +112,42 @@ if uploaded_file:
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
-    # 🔥 CORRELATION
+    # 🔥 CORRELATION PANEL
+    st.markdown("### 🧠 Correlated Threats")
+
     alerts = correlate_events(parsed_logs)
 
-    st.subheader("🧠 Correlated Threat Detection")
-
     for alert in alerts:
-        st.write(f"🚨 {alert['type']} ({alert['severity']})")
+        st.error(f"{alert['type']} ({alert['severity']})")
         st.write(alert["description"])
-        st.write("---")
 
-    # 🔥 TIMELINE VISUALIZATION
-    st.subheader("📈 Attack Timeline")
+    # 🔥 TIMELINE PANEL
+    st.markdown("### 📈 Attack Timeline")
 
-    event_types = []
-    for log in parsed_logs[:20]:
-        event_types.append(log.get("alert_type", "Normal"))
+    event_types = [log.get("alert_type", "Normal") for log in parsed_logs[:20]]
 
     fig, ax = plt.subplots()
     ax.plot(range(len(event_types)), event_types, marker='o')
-
+    ax.set_title("Attack Progression")
     ax.set_xlabel("Event Sequence")
     ax.set_ylabel("Event Type")
-    ax.set_title("Attack Progression Timeline")
-
-    plt.xticks(rotation=45)
 
     st.pyplot(fig)
 
-    # 🔥 EVENT ANALYSIS
-    st.subheader("📊 Log Analysis")
+    # 🔥 EVENT PANEL
+    st.markdown("### 📊 Event Analysis")
 
     for i, log in enumerate(parsed_logs[:10]):
-        st.write(f"--- Event {i+1} ---")
+        with st.container():
+            st.markdown(f"**Event {i+1}**")
 
-        input_data = log
-        real_ip = log.get("source_ip", "8.8.8.8")
+            real_ip = log.get("source_ip", "8.8.8.8")
+            result, score, severity, mitre, anomaly, ip_status = predict_alert(log, ip=real_ip)
 
-        result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data, ip=real_ip)
+            c1, c2, c3 = st.columns(3)
+            c1.write(f"🌐 IP: {real_ip}")
+            c2.write(f"Risk: {score}")
+            c3.write(f"Severity: {severity}")
 
-        st.write(f"🌐 Source IP: {real_ip}")
-        st.write(result)
-        st.write(f"Risk Score: {score} | Severity: {severity}")
-        st.write(f"IP Status: {ip_status}")
-        st.write(f"Behavior: {anomaly}")
-        st.write("---")
+            st.write(result)
+            st.write("---")
