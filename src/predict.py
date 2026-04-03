@@ -7,6 +7,10 @@ import os
 base_path = os.path.dirname(os.path.dirname(__file__))
 model_path = os.path.join(base_path, "model", "model.pkl")
 
+# 🔥 Load or train model automatically
+if not os.path.exists(model_path):
+    from train_model import *
+
 model = joblib.load(model_path)
 
 # 🔐 API KEY (SET IN ENV OR DIRECTLY HERE)
