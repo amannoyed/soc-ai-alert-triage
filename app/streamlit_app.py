@@ -1,13 +1,13 @@
-from correlation_engine import correlate_events
 import streamlit as st
 import sys
 import os
 
-# 🔥 Fix import paths
+# 🔥 Fix import paths FIRST (very important)
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from predict import predict_alert
 from log_parser import parse_evtx
+from correlation_engine import correlate_events
 
 st.set_page_config(page_title="SOC Dashboard", layout="wide")
 
@@ -67,36 +67,40 @@ st.header("📂 Upload EVTX Logs (Real SOC Data)")
 uploaded_file = st.file_uploader("Upload Windows EVTX Log File", type=["evtx"])
 
 if uploaded_file:
+    # Save file temporarily
     with open("temp.evtx", "wb") as f:
         f.write(uploaded_file.read())
 
+    # Parse logs
     parsed_logs = parse_evtx("temp.evtx")
-
-    alerts = correlate_events(parsed_logs)
-
-st.subheader("🧠 Correlated Threat Detection")
-
-for alert in alerts:
-    st.write(f"🚨 {alert['type']} ({alert['severity']})")
-    st.write(alert["description"])
-    st.write("---")
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
+    # 🔥 CORRELATION ENGINE
+    alerts = correlate_events(parsed_logs)
+
+    st.subheader("🧠 Correlated Threat Detection")
+
+    for alert in alerts:
+        st.write(f"🚨 {alert['type']} ({alert['severity']})")
+        st.write(alert["description"])
+        st.write("---")
+
+    # 🔥 EVENT LEVEL ANALYSIS
     st.subheader("📊 Log Analysis")
 
-    for i, log in enumerate(parsed_logs[:10]):  # show first 10 logs
+    for i, log in enumerate(parsed_logs[:10]):
         st.write(f"--- Event {i+1} ---")
 
-        input_data = {
-            "failed_logins": log["failed_logins"],
-            "alert_type_Brute Force": 1 if log["alert_type"]=="Brute Force" else 0,
-            "alert_type_Suspicious Activity": 1 if log["alert_type"]=="Suspicious Activity" else 0,
-        }
+        input_data = log  # 🔥 use full parsed data
 
-        result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data, ip="8.8.8.8")
+        real_ip = log.get("source_ip", "8.8.8.8")
 
+        result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data, ip=real_ip)
+
+        st.write(f"🌐 Source IP: {real_ip}")
         st.write(result)
         st.write(f"Risk Score: {score} | Severity: {severity}")
+        st.write(f"IP Status: {ip_status}")
         st.write(f"Behavior: {anomaly}")
         st.write("---")
