@@ -1,8 +1,9 @@
 import streamlit as st
 import sys
 import os
+import matplotlib.pyplot as plt
 
-# 🔥 Fix import paths FIRST (very important)
+# 🔥 Fix import paths
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from predict import predict_alert
@@ -67,16 +68,14 @@ st.header("📂 Upload EVTX Logs (Real SOC Data)")
 uploaded_file = st.file_uploader("Upload Windows EVTX Log File", type=["evtx"])
 
 if uploaded_file:
-    # Save file temporarily
     with open("temp.evtx", "wb") as f:
         f.write(uploaded_file.read())
 
-    # Parse logs
     parsed_logs = parse_evtx("temp.evtx")
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
-    # 🔥 CORRELATION ENGINE
+    # 🔥 CORRELATION
     alerts = correlate_events(parsed_logs)
 
     st.subheader("🧠 Correlated Threat Detection")
@@ -86,14 +85,31 @@ if uploaded_file:
         st.write(alert["description"])
         st.write("---")
 
-    # 🔥 EVENT LEVEL ANALYSIS
+    # 🔥 TIMELINE VISUALIZATION
+    st.subheader("📈 Attack Timeline")
+
+    event_types = []
+    for log in parsed_logs[:20]:
+        event_types.append(log.get("alert_type", "Normal"))
+
+    fig, ax = plt.subplots()
+    ax.plot(range(len(event_types)), event_types, marker='o')
+
+    ax.set_xlabel("Event Sequence")
+    ax.set_ylabel("Event Type")
+    ax.set_title("Attack Progression Timeline")
+
+    plt.xticks(rotation=45)
+
+    st.pyplot(fig)
+
+    # 🔥 EVENT ANALYSIS
     st.subheader("📊 Log Analysis")
 
     for i, log in enumerate(parsed_logs[:10]):
         st.write(f"--- Event {i+1} ---")
 
-        input_data = log  # 🔥 use full parsed data
-
+        input_data = log
         real_ip = log.get("source_ip", "8.8.8.8")
 
         result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data, ip=real_ip)
