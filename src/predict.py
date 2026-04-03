@@ -10,7 +10,9 @@ model_path = os.path.join(base_path, "model", "model.pkl")
 model = joblib.load(model_path)
 
 # 🔐 API KEY (SET IN ENV OR DIRECTLY HERE)
-ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY") or "32fd0376f6d100866e790cbc81a2998893caaff4b8260a6da3cee0308352fed2280c5bf108391d54"
+import streamlit as st
+
+ABUSEIPDB_API_KEY = st.secrets["ABUSEIPDB_API_KEY"]
 
 # ---------------- IP INTEL ---------------- #
 
