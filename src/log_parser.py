@@ -14,10 +14,12 @@ def parse_evtx(file_path):
                 event_id = None
                 data_fields = {}
 
+                # Extract Event ID
                 for elem in root.iter():
                     if "EventID" in elem.tag:
                         event_id = elem.text
 
+                # Extract event data
                 for data in root.iter():
                     if "Data" in data.tag and data.attrib.get("Name"):
                         data_fields[data.attrib["Name"]] = data.text
@@ -28,35 +30,35 @@ def parse_evtx(file_path):
                     "source_ip": "8.8.8.8"
                 }
 
-        # 🔥 FORCE TEST (for demo)
-
-log_entry["alert_type"] = "Malware Execution"
-log_entry["failed_logins"] = 25
-
-                # ---------------- 🔥 SYSMON DETECTION ---------------- #
+                # ---------------- 🔥 IMPROVED SYSMON DETECTION ---------------- #
 
                 if event_id == "1":  # Sysmon Process Creation
                     process = data_fields.get("Image", "").lower()
                     cmd = data_fields.get("CommandLine", "").lower()
 
-                    # 🔥 MALICIOUS TOOL DETECTION
+                    # 🔥 HIGH RISK (real attack tools)
                     if any(x in process for x in ["mimikatz", "psexec", "netcat"]):
                         log_entry["alert_type"] = "Credential Dumping"
-                        log_entry["failed_logins"] = 20
+                        log_entry["failed_logins"] = 25
 
-                    # 🔥 POWERSHELL ABUSE
+                    # 🔥 MALWARE / SCRIPT EXECUTION
                     elif "powershell" in process:
+                        log_entry["alert_type"] = "Suspicious Activity"
+                        log_entry["failed_logins"] = 15
+
+                        if any(x in cmd for x in ["-enc", "iex", "download"]):
+                            log_entry["alert_type"] = "Malware Execution"
+                            log_entry["failed_logins"] = 22
+
+                    # 🔥 COMMAND EXECUTION
+                    elif "cmd.exe" in process:
                         log_entry["alert_type"] = "Suspicious Activity"
                         log_entry["failed_logins"] = 10
 
-                        if any(x in cmd for x in ["-enc", "download", "iex"]):
-                            log_entry["alert_type"] = "Malware Execution"
-                            log_entry["failed_logins"] = 18
-
-                    # 🔥 CMD EXECUTION
-                    elif "cmd.exe" in process:
+                    # 🔥 DEFAULT: ANY process = mild signal
+                    else:
                         log_entry["alert_type"] = "Suspicious Activity"
-                        log_entry["failed_logins"] = 6
+                        log_entry["failed_logins"] = 5
 
                 logs.append(log_entry)
 
