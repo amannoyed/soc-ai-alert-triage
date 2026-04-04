@@ -14,7 +14,7 @@ from kill_chain import map_kill_chain
 
 st.set_page_config(page_title="SOC Dashboard", layout="wide")
 
-# ---------------- 🔥 AUTO REFRESH ---------------- #
+# ---------------- 🔄 AUTO REFRESH ---------------- #
 
 st.sidebar.title("⚙️ Settings")
 auto_refresh = st.sidebar.checkbox("Enable Live Monitoring", value=False)
@@ -24,7 +24,7 @@ if auto_refresh:
     time.sleep(refresh_rate)
     st.rerun()
 
-# ---------------- 🔥 DARK THEME ---------------- #
+# ---------------- 🎨 DARK THEME ---------------- #
 
 st.markdown("""
 <style>
@@ -35,7 +35,7 @@ body { background-color: #0E1117; }
 
 st.title("🛡️ SOC AI Threat Intelligence Dashboard")
 
-# ---------------- 🚨 KPI PANEL ---------------- #
+# ---------------- 🚨 KPI ---------------- #
 
 st.markdown("### 🚨 SOC Overview")
 k1, k2, k3, k4 = st.columns(4)
@@ -47,10 +47,9 @@ k4.metric("System Status", "Active")
 # ---------------- 🔴 LIVE ALERT FEED ---------------- #
 
 st.markdown("### 🔴 Live Alert Feed")
-
 alert_placeholder = st.empty()
 
-# ---------------- 🔧 MANUAL INPUT ---------------- #
+# ---------------- 🔧 MANUAL ---------------- #
 
 st.markdown("### 🔧 Manual Simulation")
 
@@ -83,12 +82,8 @@ input_data = {
 if st.button("🚨 Analyze"):
     result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data, ip)
 
-    st.markdown("### 🔍 Detection Result")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Risk Score", score)
-    c2.metric("Severity", severity)
-    c3.metric("IP Status", ip_status)
+    st.write(result)
+    st.write(f"Risk: {score} | {severity}")
 
 # ---------------- 📂 LOG INGESTION ---------------- #
 
@@ -104,7 +99,7 @@ if uploaded_file:
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
-    # 🔴 LIVE ALERT FEED UPDATE
+    # 🔴 LIVE ALERT FEED
     with alert_placeholder.container():
         st.markdown("### 🔴 Live Alerts")
 
@@ -113,15 +108,13 @@ if uploaded_file:
                 "failed_logins": log.get("failed_logins", 0),
                 "alert_type_Normal Login": 1 if log.get("alert_type") == "Normal Login" else 0,
                 "alert_type_Brute Force": 1 if log.get("alert_type") == "Brute Force" else 0,
-                "alert_type_Credential Stuffing": 1 if log.get("alert_type") == "Credential Stuffing" else 0,
-                "alert_type_Password Spray": 1 if log.get("alert_type") == "Password Spray" else 0,
                 "alert_type_Suspicious Activity": 1 if log.get("alert_type") == "Suspicious Activity" else 0,
             }
 
-            result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data)
+            result, score, severity, *_ = predict_alert(input_data)
 
             if "Threat" in result:
-                st.error(f"{result} | Risk: {score} | {severity}")
+                st.error(f"{result} | Risk: {score}")
             else:
                 st.warning(f"{result} | Risk: {score}")
 
@@ -143,29 +136,24 @@ if uploaded_file:
 
     # ---------------- 📈 TIMELINE ---------------- #
 
-st.markdown("### 📈 Attack Timeline")
+    st.markdown("### 📈 Attack Timeline")
 
-severity_map = {
-    "Normal Login": 1,
-    "Suspicious Activity": 3,
-    "Brute Force": 5,
-    "Malware Execution": 7,
-    "Privilege Escalation": 8,
-    "Credential Dumping": 9
-}
+    severity_map = {
+        "Normal Login": 1,
+        "Suspicious Activity": 3,
+        "Brute Force": 5,
+        "Malware Execution": 7,
+        "Privilege Escalation": 8,
+        "Credential Dumping": 9
+    }
 
-y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
+    y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
+    x = list(range(len(y)))
 
-# 🔥 ensure visible signal
-if max(y) == 1:
-    y = [v + (i % 2) for i, v in enumerate(y)]
+    fig, ax = plt.subplots()
+    ax.plot(x, y, marker='o')
 
-x = list(range(len(y)))
+    ax.set_yticks([1,3,5,7,8,9])
+    ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
 
-fig, ax = plt.subplots(figsize=(10,3))
-ax.plot(x, y, marker='o')
-
-ax.set_yticks([1,3,5,7,8,9])
-ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
-
-st.pyplot(fig)
+    st.pyplot(fig)
