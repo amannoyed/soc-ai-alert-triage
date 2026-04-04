@@ -14,54 +14,44 @@ def parse_evtx(file_path):
                 event_id = None
                 data_fields = {}
 
-                # Extract Event ID
                 for elem in root.iter():
                     if "EventID" in elem.tag:
                         event_id = elem.text
 
-                # Extract event data fields
                 for data in root.iter():
                     if "Data" in data.tag and data.attrib.get("Name"):
                         data_fields[data.attrib["Name"]] = data.text
 
-                # Default log structure
                 log_entry = {
                     "failed_logins": 0,
                     "alert_type": "Normal Login",
                     "source_ip": "8.8.8.8"
                 }
 
-                # ---------------- 🔥 DETECTION RULES ---------------- #
+                # ---------------- 🔥 SYSMON DETECTION ---------------- #
 
-                # ❌ Failed Login → Brute Force
-                if event_id == "4625":
-                    log_entry["failed_logins"] = 15
-                    log_entry["alert_type"] = "Brute Force"
-
-                    ip = data_fields.get("IpAddress")
-                    if ip and ip != "-":
-                        log_entry["source_ip"] = ip
-
-                # ✅ Successful Login
-                elif event_id == "4624":
-                    log_entry["alert_type"] = "Normal Login"
-
-                    ip = data_fields.get("IpAddress")
-                    if ip and ip != "-":
-                        log_entry["source_ip"] = ip
-
-                # 🔥 Privilege Escalation
-                elif event_id == "4672":
-                    log_entry["alert_type"] = "Privilege Escalation"
-                    log_entry["failed_logins"] = 10
-
-                # ⚠️ Suspicious Process (Sysmon)
-                elif event_id == "1":
+                if event_id == "1":  # Sysmon Process Creation
                     process = data_fields.get("Image", "").lower()
+                    cmd = data_fields.get("CommandLine", "").lower()
 
-                    if any(x in process for x in ["powershell", "cmd.exe", "mimikatz"]):
+                    # 🔥 MALICIOUS TOOL DETECTION
+                    if any(x in process for x in ["mimikatz", "psexec", "netcat"]):
+                        log_entry["alert_type"] = "Credential Dumping"
+                        log_entry["failed_logins"] = 20
+
+                    # 🔥 POWERSHELL ABUSE
+                    elif "powershell" in process:
                         log_entry["alert_type"] = "Suspicious Activity"
-                        log_entry["failed_logins"] = 8
+                        log_entry["failed_logins"] = 10
+
+                        if any(x in cmd for x in ["-enc", "download", "iex"]):
+                            log_entry["alert_type"] = "Malware Execution"
+                            log_entry["failed_logins"] = 18
+
+                    # 🔥 CMD EXECUTION
+                    elif "cmd.exe" in process:
+                        log_entry["alert_type"] = "Suspicious Activity"
+                        log_entry["failed_logins"] = 6
 
                 logs.append(log_entry)
 
