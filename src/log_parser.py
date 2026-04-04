@@ -30,34 +30,33 @@ def parse_evtx(file_path):
                     "source_ip": "8.8.8.8"
                 }
 
-                # ---------------- 🔥 DETECTION RULES ---------------- #
+               # ---------------- 🔥 DETECTION RULES ---------------- #
 
-                # ❌ Failed Login (Brute Force Indicator)
-                if event_id == "4625":
-                    log_entry["failed_logins"] = 5
-                    log_entry["alert_type"] = "Brute Force"
+if event_id == "4625":  # Failed login
+    log_entry["failed_logins"] = 15   # 🔥 increase weight
+    log_entry["alert_type"] = "Brute Force"
 
-                    if "IpAddress" in data_fields:
-                        log_entry["source_ip"] = data_fields["IpAddress"]
+    ip = data_fields.get("IpAddress")
+    if ip and ip != "-":
+        log_entry["source_ip"] = ip
 
-                # ✅ Successful Login
-                elif event_id == "4624":
-                    log_entry["alert_type"] = "Normal Login"
 
-                    if "IpAddress" in data_fields:
-                        log_entry["source_ip"] = data_fields["IpAddress"]
+elif event_id == "4624":  # Success login
+    log_entry["alert_type"] = "Normal Login"
 
-                # ⚠️ Suspicious Process (Sysmon Event ID 1)
-                elif event_id == "1":
-                    process = data_fields.get("Image", "").lower()
+    ip = data_fields.get("IpAddress")
+    if ip and ip != "-":
+        log_entry["source_ip"] = ip
 
-                    if any(x in process for x in ["cmd.exe", "powershell", "mimikatz"]):
-                        log_entry["alert_type"] = "Suspicious Activity"
-                        log_entry["failed_logins"] = 2
 
-                logs.append(log_entry)
+elif event_id == "4672":  # 🔥 Admin privilege assigned
+    log_entry["alert_type"] = "Privilege Escalation"
+    log_entry["failed_logins"] = 10
 
-    except Exception as e:
-        print("Error parsing EVTX:", e)
 
-    return logs
+elif event_id == "1":  # Sysmon process
+    process = data_fields.get("Image", "").lower()
+
+    if any(x in process for x in ["powershell", "cmd.exe", "mimikatz"]):
+        log_entry["alert_type"] = "Suspicious Activity"
+        log_entry["failed_logins"] = 8
