@@ -1,37 +1,31 @@
 def correlate_events(events):
     alerts = []
 
-    failed_login_count = 0
-    suspicious_process = 0
+    failed_total = sum(e.get("failed_logins", 0) for e in events)
+    suspicious_count = sum(1 for e in events if e.get("alert_type") != "Normal Login")
 
-    for event in events:
-        failed_login_count += event.get("failed_logins", 0)
-
-        if event.get("alert_type") == "Suspicious Activity":
-            suspicious_process += 1
-
-    # 🔥 Rule 1 — Brute force
-    if failed_login_count > 15:
+    # 🔥 Brute force pattern
+    if failed_total > 50:
         alerts.append({
             "type": "Brute Force Attack",
             "severity": "High",
-            "description": "Multiple failed login attempts detected"
+            "description": f"Multiple failed login attempts detected ({failed_total})"
         })
 
-    # 🔥 Rule 2 — Attack chain
-    if failed_login_count > 10 and suspicious_process > 2:
+    # 🔥 Attack chain detection
+    if suspicious_count > 3:
         alerts.append({
-            "type": "Possible Account Compromise",
+            "type": "Multi-stage Attack Detected",
             "severity": "Critical",
-            "description": "Failed logins followed by suspicious activity"
+            "description": f"{suspicious_count} suspicious events detected"
         })
 
-    # 🔥 Rule 3 — Noise filtering
-    if failed_login_count < 5 and suspicious_process == 0:
+    # 🔥 Fallback
+    if not alerts:
         alerts.append({
-            "type": "Normal Activity",
+            "type": "Low Activity",
             "severity": "Low",
-            "description": "No significant threat pattern detected"
+            "description": "No strong attack patterns detected"
         })
 
     return alerts
