@@ -28,6 +28,11 @@ def parse_evtx(file_path):
                     "source_ip": "8.8.8.8"
                 }
 
+        # 🔥 FORCE TEST (for demo)
+
+log_entry["alert_type"] = "Malware Execution"
+log_entry["failed_logins"] = 25
+
                 # ---------------- 🔥 SYSMON DETECTION ---------------- #
 
                 if event_id == "1":  # Sysmon Process Creation
