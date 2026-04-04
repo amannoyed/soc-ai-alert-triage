@@ -2,6 +2,7 @@ import streamlit as st
 import sys
 import os
 import matplotlib.pyplot as plt
+import time
 
 # 🔥 Fix import paths
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -13,16 +14,22 @@ from kill_chain import map_kill_chain
 
 st.set_page_config(page_title="SOC Dashboard", layout="wide")
 
+# ---------------- 🔥 AUTO REFRESH ---------------- #
+
+st.sidebar.title("⚙️ Settings")
+auto_refresh = st.sidebar.checkbox("Enable Live Monitoring", value=False)
+refresh_rate = st.sidebar.slider("Refresh Interval (sec)", 5, 30, 10)
+
+if auto_refresh:
+    time.sleep(refresh_rate)
+    st.rerun()
+
 # ---------------- 🔥 DARK THEME ---------------- #
 
 st.markdown("""
 <style>
-body {
-    background-color: #0E1117;
-}
-.block-container {
-    padding-top: 2rem;
-}
+body { background-color: #0E1117; }
+.block-container { padding-top: 2rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -31,12 +38,17 @@ st.title("🛡️ SOC AI Threat Intelligence Dashboard")
 # ---------------- 🚨 KPI PANEL ---------------- #
 
 st.markdown("### 🚨 SOC Overview")
-
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Alerts Today", "128")
 k2.metric("Critical Threats", "7")
 k3.metric("Suspicious IPs", "23")
 k4.metric("System Status", "Active")
+
+# ---------------- 🔴 LIVE ALERT FEED ---------------- #
+
+st.markdown("### 🔴 Live Alert Feed")
+
+alert_placeholder = st.empty()
 
 # ---------------- 🔧 MANUAL INPUT ---------------- #
 
@@ -78,12 +90,6 @@ if st.button("🚨 Analyze"):
     c2.metric("Severity", severity)
     c3.metric("IP Status", ip_status)
 
-    st.write("🧠 Behavior:", anomaly)
-
-    st.markdown("#### 🎯 MITRE Mapping")
-    for t in mitre:
-        st.write(f"- {t}")
-
 # ---------------- 📂 LOG INGESTION ---------------- #
 
 st.markdown("### 📂 Log Ingestion")
@@ -98,87 +104,63 @@ if uploaded_file:
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
-    # ---------------- 🧠 CORRELATION ---------------- #
-    st.markdown("### 🧠 Correlated Threats")
+    # 🔴 LIVE ALERT FEED UPDATE
+    with alert_placeholder.container():
+        st.markdown("### 🔴 Live Alerts")
 
+        for log in parsed_logs[-5:]:
+            input_data = {
+                "failed_logins": log.get("failed_logins", 0),
+                "alert_type_Normal Login": 1 if log.get("alert_type") == "Normal Login" else 0,
+                "alert_type_Brute Force": 1 if log.get("alert_type") == "Brute Force" else 0,
+                "alert_type_Credential Stuffing": 1 if log.get("alert_type") == "Credential Stuffing" else 0,
+                "alert_type_Password Spray": 1 if log.get("alert_type") == "Password Spray" else 0,
+                "alert_type_Suspicious Activity": 1 if log.get("alert_type") == "Suspicious Activity" else 0,
+            }
+
+            result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data)
+
+            if "Threat" in result:
+                st.error(f"{result} | Risk: {score} | {severity}")
+            else:
+                st.warning(f"{result} | Risk: {score}")
+
+    # ---------------- 🧠 CORRELATION ---------------- #
+
+    st.markdown("### 🧠 Correlated Threats")
     alerts = correlate_events(parsed_logs)
 
     for alert in alerts:
         st.error(f"{alert['type']} ({alert['severity']})")
-        st.write(alert["description"])
 
     # ---------------- 🧬 KILL CHAIN ---------------- #
-    st.markdown("### 🧬 Attack Kill Chain (MITRE)")
 
-    kill_chain = map_kill_chain(parsed_logs)
+    st.markdown("### 🧬 Attack Kill Chain")
+    stages = map_kill_chain(parsed_logs)
 
-    if kill_chain:
-        for stage in kill_chain:
-            st.write(f"➡️ {stage}")
-    else:
-        st.write("No attack chain detected")
+    for s in stages:
+        st.write(f"➡️ {s}")
 
     # ---------------- 📈 TIMELINE ---------------- #
+
     st.markdown("### 📈 Attack Timeline")
 
     severity_map = {
         "Normal Login": 1,
         "Suspicious Activity": 3,
         "Brute Force": 5,
-        "Privilege Escalation": 8,
         "Malware Execution": 7,
+        "Privilege Escalation": 8,
         "Credential Dumping": 9
     }
 
-    y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs[:20]]
+    y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
     x = list(range(len(y)))
 
-    fig, ax = plt.subplots(figsize=(12, 4))
+    fig, ax = plt.subplots()
     ax.plot(x, y, marker='o')
 
     ax.set_yticks([1,3,5,7,8,9])
     ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
 
-    ax.set_title("Attack Progression")
-    ax.set_xlabel("Event Sequence")
-    ax.set_ylabel("Threat Level")
-
-    fig.patch.set_facecolor('#0E1117')
-    ax.set_facecolor('#0E1117')
-    ax.tick_params(colors='white')
-    ax.title.set_color('white')
-    ax.xaxis.label.set_color('white')
-    ax.yaxis.label.set_color('white')
-
     st.pyplot(fig)
-
-    # ---------------- 📊 EVENT ANALYSIS ---------------- #
-    st.markdown("### 📊 Event Analysis")
-
-    for i, log in enumerate(parsed_logs[:10]):
-
-        st.markdown(f"**Event {i+1}**")
-
-        input_data = {
-            "failed_logins": log.get("failed_logins", 0),
-            "alert_type_Normal Login": 1 if log.get("alert_type") == "Normal Login" else 0,
-            "alert_type_Brute Force": 1 if log.get("alert_type") == "Brute Force" else 0,
-            "alert_type_Credential Stuffing": 1 if log.get("alert_type") == "Credential Stuffing" else 0,
-            "alert_type_Password Spray": 1 if log.get("alert_type") == "Password Spray" else 0,
-            "alert_type_Suspicious Activity": 1 if log.get("alert_type") == "Suspicious Activity" else 0,
-        }
-
-        real_ip = log.get("source_ip", "8.8.8.8")
-
-        result, score, severity, mitre, anomaly, ip_status = predict_alert(
-            input_data,
-            ip=real_ip
-        )
-
-        c1, c2, c3 = st.columns(3)
-        c1.write(f"🌐 IP: {real_ip}")
-        c2.write(f"Risk: {score}")
-        c3.write(f"Severity: {severity}")
-
-        st.write(result)
-        st.write("---")
