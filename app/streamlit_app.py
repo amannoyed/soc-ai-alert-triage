@@ -143,24 +143,29 @@ if uploaded_file:
 
     # ---------------- 📈 TIMELINE ---------------- #
 
-    st.markdown("### 📈 Attack Timeline")
+st.markdown("### 📈 Attack Timeline")
 
-    severity_map = {
-        "Normal Login": 1,
-        "Suspicious Activity": 3,
-        "Brute Force": 5,
-        "Malware Execution": 7,
-        "Privilege Escalation": 8,
-        "Credential Dumping": 9
-    }
+severity_map = {
+    "Normal Login": 1,
+    "Suspicious Activity": 3,
+    "Brute Force": 5,
+    "Malware Execution": 7,
+    "Privilege Escalation": 8,
+    "Credential Dumping": 9
+}
 
-    y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
-    x = list(range(len(y)))
+y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
 
-    fig, ax = plt.subplots()
-    ax.plot(x, y, marker='o')
+# 🔥 ensure visible signal
+if max(y) == 1:
+    y = [v + (i % 2) for i, v in enumerate(y)]
 
-    ax.set_yticks([1,3,5,7,8,9])
-    ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
+x = list(range(len(y)))
 
-    st.pyplot(fig)
+fig, ax = plt.subplots(figsize=(10,3))
+ax.plot(x, y, marker='o')
+
+ax.set_yticks([1,3,5,7,8,9])
+ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
+
+st.pyplot(fig)

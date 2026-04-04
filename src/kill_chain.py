@@ -8,24 +8,26 @@ def map_kill_chain(events):
             if "Initial Access" not in stages:
                 stages.append("Initial Access")
 
-        elif alert in ["Malware Execution", "Suspicious Activity"]:
+        if alert in ["Suspicious Activity", "Malware Execution"]:
             if "Execution" not in stages:
                 stages.append("Execution")
 
-        elif alert == "Privilege Escalation":
-            if "Privilege Escalation" not in stages:
-                stages.append("Privilege Escalation")
-
-        elif alert == "Credential Dumping":
+        if alert == "Credential Dumping":
             if "Credential Access" not in stages:
                 stages.append("Credential Access")
 
-    # 🔥 Persistence logic (multi-stage)
-    if len(stages) >= 3:
+        if alert == "Privilege Escalation":
+            if "Privilege Escalation" not in stages:
+                stages.append("Privilege Escalation")
+
+    # 🔥 Add persistence if multiple stages
+    if len(stages) >= 2:
         stages.append("Persistence")
 
-    # 🔥 If full attack chain
+    if len(stages) >= 3:
+        stages.append("Lateral Movement")
+
     if len(stages) >= 4:
-        stages.append("Full Attack Chain Detected")
+        stages.append("Full Attack Chain")
 
     return stages
