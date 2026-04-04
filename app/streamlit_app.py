@@ -22,19 +22,6 @@ body {
 .block-container {
     padding-top: 2rem;
 }
-.metric-card {
-    background-color: #161B22;
-    padding: 15px;
-    border-radius: 10px;
-    border: 1px solid #30363D;
-}
-.section {
-    background-color: #161B22;
-    padding: 20px;
-    border-radius: 10px;
-    border: 1px solid #30363D;
-    margin-bottom: 20px;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -55,18 +42,17 @@ k4.metric("System Status", "Active")
 
 st.markdown("### 🔧 Manual Simulation")
 
-with st.container():
-    col1, col2 = st.columns(2)
+col1, col2 = st.columns(2)
 
-    with col1:
-        failed_logins = st.slider("Failed Logins", 0, 50)
-        ip = st.text_input("Source IP", "8.8.8.8")
+with col1:
+    failed_logins = st.slider("Failed Logins", 0, 50)
+    ip = st.text_input("Source IP", "8.8.8.8")
 
-    with col2:
-        location = st.selectbox("Location", ["India","US","Russia","China","North Korea"])
-        alert_type = st.selectbox("Attack Type", [
-            "Normal Login","Brute Force","Credential Stuffing","Password Spray","Suspicious Activity"
-        ])
+with col2:
+    location = st.selectbox("Location", ["India","US","Russia","China","North Korea"])
+    alert_type = st.selectbox("Attack Type", [
+        "Normal Login","Brute Force","Credential Stuffing","Password Spray","Suspicious Activity"
+    ])
 
 input_data = {
     "failed_logins": failed_logins,
@@ -112,7 +98,7 @@ if uploaded_file:
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
-    # 🔥 CORRELATION PANEL
+    # ---------------- 🧠 CORRELATION ---------------- #
     st.markdown("### 🧠 Correlated Threats")
 
     alerts = correlate_events(parsed_logs)
@@ -121,71 +107,66 @@ if uploaded_file:
         st.error(f"{alert['type']} ({alert['severity']})")
         st.write(alert["description"])
 
-   # 🔥 REAL SOC TIMELINE
+    # ---------------- 📈 TIMELINE ---------------- #
+    st.markdown("### 📈 Attack Timeline")
 
-st.markdown("### 📈 Attack Timeline")
+    severity_map = {
+        "Normal Login": 1,
+        "Suspicious Activity": 3,
+        "Brute Force": 5,
+        "Privilege Escalation": 8
+    }
 
-severity_map = {
-    "Normal Login": 1,
-    "Suspicious Activity": 3,
-    "Brute Force": 5,
-    "Privilege Escalation": 8
-}
+    y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs[:20]]
+    x = list(range(len(y)))
 
-y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs[:20]]
-x = list(range(len(y)))
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(x, y, marker='o')
 
-fig, ax = plt.subplots(figsize=(12, 4))
-ax.plot(x, y, marker='o', linewidth=2)
+    ax.set_yticks([1, 3, 5, 8])
+    ax.set_yticklabels(["Normal", "Suspicious", "Brute Force", "Priv Esc"])
 
-ax.set_yticks([1, 3, 5, 8])
-ax.set_yticklabels(["Normal", "Suspicious", "Brute Force", "Priv Esc"])
+    ax.set_title("Attack Progression")
+    ax.set_xlabel("Event Sequence")
+    ax.set_ylabel("Threat Level")
 
-ax.set_title("Attack Progression", color="white")
-ax.set_xlabel("Event Sequence")
-ax.set_ylabel("Threat Level")
+    # Dark theme fix
+    fig.patch.set_facecolor('#0E1117')
+    ax.set_facecolor('#0E1117')
+    ax.tick_params(colors='white')
+    ax.title.set_color('white')
+    ax.xaxis.label.set_color('white')
+    ax.yaxis.label.set_color('white')
 
-# 🔥 DARK MODE FIX
-fig.patch.set_facecolor('#0E1117')
-ax.set_facecolor('#0E1117')
-ax.tick_params(colors='white')
-ax.title.set_color('white')
-ax.xaxis.label.set_color('white')
-ax.yaxis.label.set_color('white')
+    st.pyplot(fig)
 
-st.pyplot(fig)
-
-    # 🔥 EVENT PANEL
+    # ---------------- 📊 EVENT ANALYSIS ---------------- #
     st.markdown("### 📊 Event Analysis")
 
     for i, log in enumerate(parsed_logs[:10]):
-        with st.container():
-            st.markdown(f"**Event {i+1}**")
 
-            real_ip = log.get("source_ip", "8.8.8.8")
-            # 🔥 Convert parsed log → model input format
+        st.markdown(f"**Event {i+1}**")
 
-input_data = {
-    "failed_logins": log.get("failed_logins", 0),
+        input_data = {
+            "failed_logins": log.get("failed_logins", 0),
+            "alert_type_Normal Login": 1 if log.get("alert_type") == "Normal Login" else 0,
+            "alert_type_Brute Force": 1 if log.get("alert_type") == "Brute Force" else 0,
+            "alert_type_Credential Stuffing": 1 if log.get("alert_type") == "Credential Stuffing" else 0,
+            "alert_type_Password Spray": 1 if log.get("alert_type") == "Password Spray" else 0,
+            "alert_type_Suspicious Activity": 1 if log.get("alert_type") == "Suspicious Activity" else 0,
+        }
 
-    "alert_type_Normal Login": 1 if log.get("alert_type") == "Normal Login" else 0,
-    "alert_type_Brute Force": 1 if log.get("alert_type") == "Brute Force" else 0,
-    "alert_type_Credential Stuffing": 1 if log.get("alert_type") == "Credential Stuffing" else 0,
-    "alert_type_Password Spray": 1 if log.get("alert_type") == "Password Spray" else 0,
-    "alert_type_Suspicious Activity": 1 if log.get("alert_type") == "Suspicious Activity" else 0,
-}
+        real_ip = log.get("source_ip", "8.8.8.8")
 
-real_ip = log.get("source_ip", "8.8.8.8")
+        result, score, severity, mitre, anomaly, ip_status = predict_alert(
+            input_data,
+            ip=real_ip
+        )
 
-result, score, severity, mitre, anomaly, ip_status = predict_alert(
-    input_data,
-    ip=real_ip
-)
+        c1, c2, c3 = st.columns(3)
+        c1.write(f"🌐 IP: {real_ip}")
+        c2.write(f"Risk: {score}")
+        c3.write(f"Severity: {severity}")
 
-            c1, c2, c3 = st.columns(3)
-            c1.write(f"🌐 IP: {real_ip}")
-            c2.write(f"Risk: {score}")
-            c3.write(f"Severity: {severity}")
-
-            st.write(result)
-            st.write("---")
+        st.write(result)
+        st.write("---")
