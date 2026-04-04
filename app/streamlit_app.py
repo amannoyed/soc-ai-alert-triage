@@ -9,10 +9,11 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from predict import predict_alert
 from log_parser import parse_evtx
 from correlation_engine import correlate_events
+from kill_chain import map_kill_chain
 
 st.set_page_config(page_title="SOC Dashboard", layout="wide")
 
-# ---------------- 🔥 DARK SOC THEME ---------------- #
+# ---------------- 🔥 DARK THEME ---------------- #
 
 st.markdown("""
 <style>
@@ -27,12 +28,11 @@ body {
 
 st.title("🛡️ SOC AI Threat Intelligence Dashboard")
 
-# ---------------- 🔥 KPI PANEL ---------------- #
+# ---------------- 🚨 KPI PANEL ---------------- #
 
 st.markdown("### 🚨 SOC Overview")
 
 k1, k2, k3, k4 = st.columns(4)
-
 k1.metric("Alerts Today", "128")
 k2.metric("Critical Threats", "7")
 k3.metric("Suspicious IPs", "23")
@@ -107,6 +107,17 @@ if uploaded_file:
         st.error(f"{alert['type']} ({alert['severity']})")
         st.write(alert["description"])
 
+    # ---------------- 🧬 KILL CHAIN ---------------- #
+    st.markdown("### 🧬 Attack Kill Chain (MITRE)")
+
+    kill_chain = map_kill_chain(parsed_logs)
+
+    if kill_chain:
+        for stage in kill_chain:
+            st.write(f"➡️ {stage}")
+    else:
+        st.write("No attack chain detected")
+
     # ---------------- 📈 TIMELINE ---------------- #
     st.markdown("### 📈 Attack Timeline")
 
@@ -114,7 +125,9 @@ if uploaded_file:
         "Normal Login": 1,
         "Suspicious Activity": 3,
         "Brute Force": 5,
-        "Privilege Escalation": 8
+        "Privilege Escalation": 8,
+        "Malware Execution": 7,
+        "Credential Dumping": 9
     }
 
     y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs[:20]]
@@ -123,14 +136,13 @@ if uploaded_file:
     fig, ax = plt.subplots(figsize=(12, 4))
     ax.plot(x, y, marker='o')
 
-    ax.set_yticks([1, 3, 5, 8])
-    ax.set_yticklabels(["Normal", "Suspicious", "Brute Force", "Priv Esc"])
+    ax.set_yticks([1,3,5,7,8,9])
+    ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
 
     ax.set_title("Attack Progression")
     ax.set_xlabel("Event Sequence")
     ax.set_ylabel("Threat Level")
 
-    # Dark theme fix
     fig.patch.set_facecolor('#0E1117')
     ax.set_facecolor('#0E1117')
     ax.tick_params(colors='white')
