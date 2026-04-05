@@ -14,7 +14,7 @@ from kill_chain import map_kill_chain
 
 st.set_page_config(page_title="SOC Dashboard", layout="wide")
 
-# ---------------- 🔄 AUTO REFRESH ---------------- #
+# ---------------- ⚙️ SETTINGS ---------------- #
 
 st.sidebar.title("⚙️ Settings")
 auto_refresh = st.sidebar.checkbox("Enable Live Monitoring", value=False)
@@ -24,18 +24,9 @@ if auto_refresh:
     time.sleep(refresh_rate)
     st.rerun()
 
-# ---------------- 🎨 DARK THEME ---------------- #
-
-st.markdown("""
-<style>
-body { background-color: #0E1117; }
-.block-container { padding-top: 2rem; }
-</style>
-""", unsafe_allow_html=True)
+# ---------------- 🎨 UI ---------------- #
 
 st.title("🛡️ SOC AI Threat Intelligence Dashboard")
-
-# ---------------- 🚨 KPI ---------------- #
 
 st.markdown("### 🚨 SOC Overview")
 k1, k2, k3, k4 = st.columns(4)
@@ -65,33 +56,15 @@ with col2:
         "Normal Login","Brute Force","Credential Stuffing","Password Spray","Suspicious Activity"
     ])
 
-input_data = {
-    "failed_logins": failed_logins,
-    "location_India": 1 if location=="India" else 0,
-    "location_US": 1 if location=="US" else 0,
-    "location_Russia": 1 if location=="Russia" else 0,
-    "location_China": 1 if location=="China" else 0,
-    "location_North Korea": 1 if location=="North Korea" else 0,
-    "alert_type_Normal Login": 1 if alert_type=="Normal Login" else 0,
-    "alert_type_Brute Force": 1 if alert_type=="Brute Force" else 0,
-    "alert_type_Credential Stuffing": 1 if alert_type=="Credential Stuffing" else 0,
-    "alert_type_Password Spray": 1 if alert_type=="Password Spray" else 0,
-    "alert_type_Suspicious Activity": 1 if alert_type=="Suspicious Activity" else 0,
-}
-
-if st.button("🚨 Analyze"):
-    result, score, severity, mitre, anomaly, ip_status = predict_alert(input_data, ip)
-
-    st.write(result)
-    st.write(f"Risk: {score} | {severity}")
-
 # ---------------- 📂 LOG INGESTION ---------------- #
 
 st.markdown("### 📂 Log Ingestion")
 
 uploaded_file = st.file_uploader("Upload EVTX File", type=["evtx"])
 
+# 🔥 ONLY RUN IF FILE EXISTS
 if uploaded_file:
+
     with open("temp.evtx", "wb") as f:
         f.write(uploaded_file.read())
 
@@ -99,11 +72,13 @@ if uploaded_file:
 
     st.success(f"Parsed {len(parsed_logs)} events")
 
-    # 🔴 LIVE ALERT FEED
+    # ---------------- 🔴 LIVE ALERT FEED ---------------- #
+
     with alert_placeholder.container():
         st.markdown("### 🔴 Live Alerts")
 
         for log in parsed_logs[-5:]:
+
             input_data = {
                 "failed_logins": log.get("failed_logins", 0),
                 "alert_type_Normal Login": 1 if log.get("alert_type") == "Normal Login" else 0,
@@ -121,6 +96,7 @@ if uploaded_file:
     # ---------------- 🧠 CORRELATION ---------------- #
 
     st.markdown("### 🧠 Correlated Threats")
+
     alerts = correlate_events(parsed_logs)
 
     for alert in alerts:
@@ -129,57 +105,53 @@ if uploaded_file:
     # ---------------- 🧬 KILL CHAIN ---------------- #
 
     st.markdown("### 🧬 Attack Kill Chain")
+
     stages = map_kill_chain(parsed_logs)
 
     for s in stages:
         st.write(f"➡️ {s}")
 
+    # ---------------- 📈 TIMELINE ---------------- #
 
-    # ---------------- 📈 ATTACK TIMELINE ---------------- #
+    st.markdown("### 📈 Attack Timeline")
 
-st.markdown("### 📈 Attack Timeline")
+    severity_map = {
+        "Normal Login": 1,
+        "Suspicious Activity": 3,
+        "Brute Force": 5,
+        "Malware Execution": 7,
+        "Privilege Escalation": 8,
+        "Credential Dumping": 9
+    }
 
-severity_map = {
-    "Normal Login": 1,
-    "Suspicious Activity": 3,
-    "Brute Force": 5,
-    "Malware Execution": 7,
-    "Privilege Escalation": 8,
-    "Credential Dumping": 9
-}
+    y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
 
-# 🔥 Convert logs → numeric values
-y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
+    # 🔥 Ensure visible variation
+    if len(set(y)) == 1:
+        y = [v + (i % 3) for i, v in enumerate(y)]
 
-# 🔥 Ensure graph always shows variation
-if len(set(y)) == 1:
-    y = [v + (i % 3) for i, v in enumerate(y)]
+    x = list(range(len(y)))
 
-x = list(range(len(y)))
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(x, y, marker='o', linewidth=2)
 
-fig, ax = plt.subplots(figsize=(10, 4))
+    ax.set_yticks([1,3,5,7,8,9])
+    ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
 
-ax.plot(x, y, marker='o', linewidth=2)
+    ax.set_title("Attack Progression")
+    ax.set_xlabel("Event Sequence")
+    ax.set_ylabel("Threat Level")
 
-# 🔥 Labels
-ax.set_yticks([1,3,5,7,8,9])
-ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
+    # Dark theme
+    fig.patch.set_facecolor('#0E1117')
+    ax.set_facecolor('#0E1117')
 
-ax.set_title("Attack Progression")
-ax.set_xlabel("Event Sequence")
-ax.set_ylabel("Threat Level")
+    ax.tick_params(colors='white')
+    ax.title.set_color('white')
+    ax.xaxis.label.set_color('white')
+    ax.yaxis.label.set_color('white')
 
-# 🔥 DARK MODE FIX (IMPORTANT)
-fig.patch.set_facecolor('#0E1117')
-ax.set_facecolor('#0E1117')
+    st.pyplot(fig)
 
-ax.tick_params(colors='white')
-ax.title.set_color('white')
-ax.xaxis.label.set_color('white')
-ax.yaxis.label.set_color('white')
-
-# 🔥 SHOW GRAPH
-st.pyplot(fig)
-
-# 🔥 DEBUG (REMOVE LATER)
-st.write("Timeline values:", y)
+else:
+    st.info("📂 Upload an EVTX file to start analysis")
