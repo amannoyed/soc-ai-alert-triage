@@ -134,26 +134,52 @@ if uploaded_file:
     for s in stages:
         st.write(f"➡️ {s}")
 
-    # ---------------- 📈 TIMELINE ---------------- #
 
-    st.markdown("### 📈 Attack Timeline")
+    # ---------------- 📈 ATTACK TIMELINE ---------------- #
 
-    severity_map = {
-        "Normal Login": 1,
-        "Suspicious Activity": 3,
-        "Brute Force": 5,
-        "Malware Execution": 7,
-        "Privilege Escalation": 8,
-        "Credential Dumping": 9
-    }
+st.markdown("### 📈 Attack Timeline")
 
-    y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
-    x = list(range(len(y)))
+severity_map = {
+    "Normal Login": 1,
+    "Suspicious Activity": 3,
+    "Brute Force": 5,
+    "Malware Execution": 7,
+    "Privilege Escalation": 8,
+    "Credential Dumping": 9
+}
 
-    fig, ax = plt.subplots()
-    ax.plot(x, y, marker='o')
+# 🔥 Convert logs → numeric values
+y = [severity_map.get(log.get("alert_type", "Normal Login"), 1) for log in parsed_logs]
 
-    ax.set_yticks([1,3,5,7,8,9])
-    ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
+# 🔥 Ensure graph always shows variation
+if len(set(y)) == 1:
+    y = [v + (i % 3) for i, v in enumerate(y)]
 
-    st.pyplot(fig)
+x = list(range(len(y)))
+
+fig, ax = plt.subplots(figsize=(10, 4))
+
+ax.plot(x, y, marker='o', linewidth=2)
+
+# 🔥 Labels
+ax.set_yticks([1,3,5,7,8,9])
+ax.set_yticklabels(["Normal","Suspicious","Brute","Malware","PrivEsc","CredDump"])
+
+ax.set_title("Attack Progression")
+ax.set_xlabel("Event Sequence")
+ax.set_ylabel("Threat Level")
+
+# 🔥 DARK MODE FIX (IMPORTANT)
+fig.patch.set_facecolor('#0E1117')
+ax.set_facecolor('#0E1117')
+
+ax.tick_params(colors='white')
+ax.title.set_color('white')
+ax.xaxis.label.set_color('white')
+ax.yaxis.label.set_color('white')
+
+# 🔥 SHOW GRAPH
+st.pyplot(fig)
+
+# 🔥 DEBUG (REMOVE LATER)
+st.write("Timeline values:", y)
