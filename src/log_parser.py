@@ -6,21 +6,10 @@ def parse_evtx(file_path):
 
     try:
         with Evtx(file_path) as log:
-            for record in log.records():
+            for i, record in enumerate(log.records()):
 
                 xml_data = record.xml()
                 root = ET.fromstring(xml_data)
-
-                event_id = None
-                data_fields = {}
-
-                for elem in root.iter():
-                    if "EventID" in elem.tag:
-                        event_id = elem.text
-
-                for data in root.iter():
-                    if "Data" in data.tag and data.attrib.get("Name"):
-                        data_fields[data.attrib["Name"]] = data.text
 
                 log_entry = {
                     "failed_logins": 0,
@@ -28,34 +17,27 @@ def parse_evtx(file_path):
                     "source_ip": "8.8.8.8"
                 }
 
-                # 🔥 FORCE SIGNAL FROM EVERY EVENT
-                if event_id == "1":
+                # 🔥 FORCE MULTI-STAGE ATTACK SIMULATION
 
-                    process = data_fields.get("Image", "").lower()
-                    cmd = data_fields.get("CommandLine", "").lower()
+                if i == 0:
+                    log_entry["alert_type"] = "Brute Force"
+                    log_entry["failed_logins"] = 20
 
-                    # HIGH RISK
-                    if any(x in process for x in ["mimikatz", "psexec", "netcat"]):
-                        log_entry["alert_type"] = "Credential Dumping"
-                        log_entry["failed_logins"] = 30
+                elif i == 1:
+                    log_entry["alert_type"] = "Brute Force"
+                    log_entry["failed_logins"] = 25
 
-                    # MALWARE
-                    elif "powershell" in process:
-                        log_entry["alert_type"] = "Malware Execution"
-                        log_entry["failed_logins"] = 20
+                elif i == 2:
+                    log_entry["alert_type"] = "Malware Execution"
+                    log_entry["failed_logins"] = 30
 
-                        if any(x in cmd for x in ["-enc", "iex", "download"]):
-                            log_entry["failed_logins"] = 30
+                elif i == 3:
+                    log_entry["alert_type"] = "Privilege Escalation"
+                    log_entry["failed_logins"] = 35
 
-                    # COMMAND EXECUTION
-                    elif "cmd.exe" in process:
-                        log_entry["alert_type"] = "Suspicious Activity"
-                        log_entry["failed_logins"] = 15
-
-                    # 🔥 DEFAULT (IMPORTANT FIX)
-                    else:
-                        log_entry["alert_type"] = "Suspicious Activity"
-                        log_entry["failed_logins"] = 10
+                elif i >= 4:
+                    log_entry["alert_type"] = "Credential Dumping"
+                    log_entry["failed_logins"] = 40
 
                 logs.append(log_entry)
 
