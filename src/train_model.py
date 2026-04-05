@@ -17,6 +17,29 @@ model_path = os.path.join(model_dir, "model.pkl")
 def train():
     df = load_data()
 
+    # --- Defensive checks ---
+    print(f"Dataset shape: {df.shape}")
+    print(f"Label NaN count: {df['label'].isna().sum()}")
+    print(f"Label value counts:\n{df['label'].value_counts(dropna=False)}")
+
+    # Drop rows with missing labels
+    df = df.dropna(subset=["label"])
+
+    # Drop rows with any NaN in features (optional but safe)
+    df = df.dropna()
+
+    if df.empty:
+        raise ValueError("No valid training data after dropping NaN rows. Check your preprocess.py / data source.")
+
+    # Check each class has enough samples for stratified split
+    min_class_count = df["label"].value_counts().min()
+    if min_class_count < 2:
+        raise ValueError(
+            f"At least one label class has fewer than 2 samples (min={min_class_count}). "
+            "Cannot use stratify. Either get more data or remove stratify=y."
+        )
+    # --- End defensive checks ---
+
     X = df.drop("label", axis=1)
     y = df["label"]
 
