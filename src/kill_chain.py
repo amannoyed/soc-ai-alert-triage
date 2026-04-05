@@ -1,32 +1,68 @@
-def map_kill_chain(events):
-    stages = []
+# MITRE ATT&CK Tactic mapping
+TACTIC_MAP = {
+    "Brute Force":          "Initial Access",
+    "Credential Stuffing":  "Initial Access",
+    "Password Spray":       "Initial Access",
+    "Suspicious Login":     "Initial Access",
+    "Suspicious Activity":  "Execution",
+    "Malware Execution":    "Execution",
+    "Privilege Escalation": "Privilege Escalation",
+    "Credential Dumping":   "Credential Access",
+    "Normal Login":         None,
+}
+
+STAGE_ORDER = [
+    "Reconnaissance",
+    "Initial Access",
+    "Execution",
+    "Persistence",
+    "Privilege Escalation",
+    "Defense Evasion",
+    "Credential Access",
+    "Discovery",
+    "Lateral Movement",
+    "Exfiltration",
+]
+
+
+def map_kill_chain(events: list[dict]) -> list[dict]:
+    """
+    Returns ordered list of kill chain stages with evidence.
+    Each item: {stage, tactic, evidence_count, alert_types}
+    """
+    stage_evidence: dict[str, list[str]] = {}
 
     for e in events:
-        alert = e.get("alert_type")
+        alert = e.get("alert_type", "Normal Login")
+        tactic = TACTIC_MAP.get(alert)
 
-        if alert == "Brute Force":
-            if "Initial Access" not in stages:
-                stages.append("Initial Access")
+        if tactic:
+            stage_evidence.setdefault(tactic, [])
+            stage_evidence[tactic].append(alert)
 
-        if alert == "Malware Execution":
-            if "Execution" not in stages:
-                stages.append("Execution")
+    # Infer additional stages
+    detected = set(stage_evidence.keys())
 
-        if alert == "Privilege Escalation":
-            if "Privilege Escalation" not in stages:
-                stages.append("Privilege Escalation")
+    if "Initial Access" in detected and "Execution" in detected:
+        stage_evidence.setdefault("Persistence", ["(inferred)"])
 
-        if alert == "Credential Dumping":
-            if "Credential Access" not in stages:
-                stages.append("Credential Access")
+    if "Execution" in detected and "Privilege Escalation" in detected:
+        stage_evidence.setdefault("Defense Evasion", ["(inferred)"])
 
-    if len(stages) >= 2:
-        stages.append("Persistence")
+    if "Credential Access" in detected:
+        stage_evidence.setdefault("Lateral Movement", ["(inferred)"])
+        stage_evidence.setdefault("Exfiltration", ["(inferred)"])
 
-    if len(stages) >= 3:
-        stages.append("Lateral Movement")
+    # Return in MITRE order
+    result = []
+    for stage in STAGE_ORDER:
+        if stage in stage_evidence:
+            types = stage_evidence[stage]
+            result.append({
+                "stage":          stage,
+                "evidence_count": len([t for t in types if t != "(inferred)"]),
+                "alert_types":    list(set(types)),
+                "inferred":       types == ["(inferred)"],
+            })
 
-    if len(stages) >= 4:
-        stages.append("Full Attack Chain 💀")
-
-    return stages
+    return result

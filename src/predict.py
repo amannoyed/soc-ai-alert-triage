@@ -1,154 +1,223 @@
 import joblib
 import pandas as pd
-import requests
 import os
+import requests
+import sys
 
-# 🔥 Load model safely
+sys.path.append(os.path.dirname(__file__))
+
 base_path = os.path.dirname(os.path.dirname(__file__))
-model_path = os.path.join(base_path, "model", "model.pkl")
+model_dir = os.path.join(base_path, "model")
+model_path = os.path.join(model_dir, "model.pkl")
 
-# 🔥 Load or train model automatically
-if not os.path.exists(model_path):
-    from train_model import *
+# ── Auto-train if model missing ──────────────────────────────────────────────
 
-model = joblib.load(model_path)
+def _ensure_model():
+    if not os.path.exists(model_path):
+        from train_model import train
+        return train()
+    return joblib.load(model_path)
 
-# 🔐 API KEY (SET IN ENV OR DIRECTLY HERE)
-import streamlit as st
 
-ABUSEIPDB_API_KEY = st.secrets["ABUSEIPDB_API_KEY"]
+model = _ensure_model()
 
-# ---------------- IP INTEL ---------------- #
+# ── API Key ───────────────────────────────────────────────────────────────────
+# Set via Streamlit secrets or environment variable
 
-def check_ip_reputation(ip):
-    url = "https://api.abuseipdb.com/api/v2/check"
-
-    headers = {
-        "Key": ABUSEIPDB_API_KEY,
-        "Accept": "application/json"
-    }
-
-    params = {
-        "ipAddress": ip,
-        "maxAgeInDays": 90
-    }
-
+def _get_api_key():
     try:
-        response = requests.get(url, headers=headers, params=params)
-        data = response.json()
-
-        abuse_score = data["data"]["abuseConfidenceScore"]
-
-        if abuse_score > 80:
-            return "🚨 Known Malicious IP", abuse_score
-        elif abuse_score > 40:
-            return "⚠️ Suspicious IP", abuse_score
-        else:
-            return "✅ Clean IP", abuse_score
-
-    except:
-        return "⚠️ Intel lookup failed", 0
+        import streamlit as st
+        return st.secrets.get("ABUSEIPDB_API_KEY", "")
+    except Exception:
+        return os.getenv("ABUSEIPDB_API_KEY", "")
 
 
-# ---------------- MITRE MAPPING ---------------- #
+# ── Known malicious IPs (fallback when API unavailable) ──────────────────────
 
-def map_mitre(data):
-    mitre = []
+KNOWN_BAD_IPS = {
+    "10.0.0.5", "45.33.32.1", "185.220.101.1", "103.21.244.0",
+    "77.88.55.1", "31.13.72.1", "46.166.185.1", "91.108.4.1",
+    "149.154.167.1", "5.9.32.1", "66.102.0.1", "62.210.0.1"
+}
 
-    if data.get("alert_type_Brute Force", 0):
-        mitre.append("T1110 - Brute Force")
+# ── IP Reputation ─────────────────────────────────────────────────────────────
 
-    if data.get("alert_type_Credential Stuffing", 0):
-        mitre.append("T1110.004 - Credential Stuffing")
+def check_ip_reputation(ip: str) -> tuple[str, int]:
+    """Returns (status_string, abuse_score 0-100)."""
+    # Skip private / loopback
+    if ip.startswith(("192.168.", "10.", "172.", "127.", "8.8.")):
+        return "🟢 Internal / Clean IP", 0
 
-    if data.get("alert_type_Password Spray", 0):
-        mitre.append("T1110.003 - Password Spray")
+    api_key = _get_api_key()
 
-    if data.get("alert_type_Suspicious Activity", 0):
-        mitre.append("T1059 - Command Execution")
+    if api_key:
+        try:
+            resp = requests.get(
+                "https://api.abuseipdb.com/api/v2/check",
+                headers={"Key": api_key, "Accept": "application/json"},
+                params={"ipAddress": ip, "maxAgeInDays": 90},
+                timeout=5,
+            )
+            data = resp.json()
+            score = data["data"]["abuseConfidenceScore"]
+            country = data["data"].get("countryCode", "??")
 
-    return mitre
+            if score >= 75:
+                return f"🔴 Malicious IP [{country}] (Score: {score})", score
+            elif score >= 30:
+                return f"🟡 Suspicious IP [{country}] (Score: {score})", score
+            else:
+                return f"🟢 Clean IP [{country}] (Score: {score})", score
+        except Exception:
+            pass  # Fall through to local check
+
+    # Local fallback
+    if ip in KNOWN_BAD_IPS:
+        return f"🔴 Malicious IP (local threat list)", 90
+    return "🟢 Clean IP (no local match)", 0
 
 
-# ---------------- RISK ENGINE ---------------- #
+# ── MITRE ATT&CK Mapping ──────────────────────────────────────────────────────
 
-def calculate_risk_score(data, ip_score):
+MITRE_MAP = {
+    "Brute Force":          [("T1110",     "Brute Force")],
+    "Credential Stuffing":  [("T1110.004", "Credential Stuffing")],
+    "Password Spray":       [("T1110.003", "Password Spraying")],
+    "Suspicious Login":     [("T1078",     "Valid Accounts")],
+    "Suspicious Activity":  [("T1059",     "Command & Scripting Interpreter")],
+    "Malware Execution":    [("T1059.001", "PowerShell"), ("T1204", "User Execution")],
+    "Credential Dumping":   [("T1003",     "OS Credential Dumping")],
+    "Privilege Escalation": [("T1068",     "Exploitation for Privilege Escalation")],
+}
+
+
+def map_mitre(alert_type: str) -> list[str]:
+    entries = MITRE_MAP.get(alert_type, [])
+    return [f"{tid} — {name}" for tid, name in entries]
+
+
+# ── Risk Scoring Engine ───────────────────────────────────────────────────────
+
+GEO_RISK = {
+    "North Korea": 40,
+    "Russia":      25,
+    "China":       20,
+    "Brazil":      10,
+    "US":          5,
+    "Germany":     5,
+    "UK":          5,
+    "India":       3,
+}
+
+ATTACK_RISK = {
+    "Brute Force":          35,
+    "Credential Stuffing":  40,
+    "Password Spray":       30,
+    "Suspicious Login":     20,
+    "Suspicious Activity":  25,
+    "Malware Execution":    45,
+    "Credential Dumping":   50,
+    "Privilege Escalation": 45,
+    "Normal Login":         0,
+}
+
+
+def calculate_risk_score(data: dict, ip_score: int) -> tuple[int, list[str]]:
     score = 0
     reasons = []
 
     failed = data.get("failed_logins", 0)
 
-    if failed > 20:
-        score += 60
-        reasons.append("Extreme suspicious activity")
-    elif failed > 10:
-        score += 40
-        reasons.append("High suspicious behavior")
-    elif failed > 5:
-        score += 20
-
-    if data.get("alert_type_Brute Force", 0):
-        score += 40
-
-    if data.get("alert_type_Suspicious Activity", 0):
-        score += 35
-
-    if data.get("alert_type_Credential Stuffing", 0):
+    if failed >= 30:
         score += 45
-
-    if data.get("alert_type_Password Spray", 0):
+        reasons.append(f"Extreme login failures ({failed})")
+    elif failed >= 15:
         score += 30
+        reasons.append(f"High login failures ({failed})")
+    elif failed >= 8:
+        score += 15
+        reasons.append(f"Moderate login failures ({failed})")
 
-    # 🔥 IP reputation weight
-    score += int(ip_score * 0.8)
+    # Attack type contribution
+    for key, val in ATTACK_RISK.items():
+        col = f"alert_type_{key}"
+        if data.get(col, 0) and val > 0:
+            score += val
+            reasons.append(f"Attack type: {key}")
+            break  # Only count once
+
+    # Geo risk
+    for country, geo_val in GEO_RISK.items():
+        if data.get(f"location_{country}", 0):
+            score += geo_val
+            reasons.append(f"High-risk region: {country}")
+            break
+
+    # IP reputation
+    ip_contribution = int(ip_score * 0.6)
+    if ip_contribution > 0:
+        score += ip_contribution
+        reasons.append(f"IP reputation score: {ip_score}")
 
     return min(score, 100), reasons
 
-# ---------------- MAIN PREDICTION ---------------- #
 
-def predict_alert(data, ip="8.8.8.8"):
+def get_severity(score: int) -> str:
+    if score >= 80:
+        return "🔴 Critical"
+    elif score >= 60:
+        return "🟠 High"
+    elif score >= 35:
+        return "🟡 Medium"
+    else:
+        return "🟢 Low"
+
+
+# ── Main Prediction Function ──────────────────────────────────────────────────
+
+def predict_alert(data: dict, ip: str = "8.8.8.8") -> tuple:
     df = pd.DataFrame([data])
 
-    # 🔥 Align features
-    expected_columns = model.feature_names_in_
-
-    for col in expected_columns:
+    # Align to training features
+    for col in model.feature_names_in_:
         if col not in df.columns:
             df[col] = 0
 
-    df = df[expected_columns]
+    df = df[model.feature_names_in_]
 
-    prediction = model.predict(df)[0]
+    ml_prediction = int(model.predict(df)[0])
+    ml_confidence = float(model.predict_proba(df)[0][1])  # prob of being threat
 
-    # 🌐 IP INTEL
+    # Determine alert type from data
+    alert_type = "Normal Login"
+    for key in ATTACK_RISK:
+        if data.get(f"alert_type_{key}", 0):
+            alert_type = key
+            break
+
+    # IP intel
     ip_status, ip_score = check_ip_reputation(ip)
 
-    # 🧠 Risk
+    # Risk
     risk_score, reasons = calculate_risk_score(data, ip_score)
 
-    # 🎯 MITRE
-    mitre = map_mitre(data)
+    # Override: if ML says threat but score is low, bump it
+    if ml_prediction == 1 and risk_score < 30:
+        risk_score = max(risk_score, 35)
+        reasons.append("ML model flagged as threat")
 
-    # 🚨 Severity
-    if risk_score > 80:
-        severity = "🔴 Critical"
-    elif risk_score > 60:
-        severity = "🟠 High"
-    elif risk_score > 30:
-        severity = "🟡 Medium"
-    else:
-        severity = "🟢 Low"
+    severity = get_severity(risk_score)
+    mitre = map_mitre(alert_type)
 
-    # 🔍 Behavior analysis
-    if data.get("failed_logins", 0) > 15:
+    # Anomaly
+    if data.get("failed_logins", 0) >= 20 or ip_score >= 70:
         anomaly = "⚠️ Anomalous Behavior Detected"
     else:
-        anomaly = "Normal"
+        anomaly = "✅ Normal Behavior"
 
-    # 📢 Final result
-    if prediction == 1:
-        result = "🚨 Threat Detected"
+    if ml_prediction == 1:
+        result = f"🚨 Threat Detected (ML confidence: {ml_confidence:.0%})"
     else:
-        result = "✅ Benign Activity"
+        result = f"✅ Benign Activity (ML confidence: {1 - ml_confidence:.0%})"
 
-    return result, risk_score, severity, mitre, anomaly, ip_status
+    return result, risk_score, severity, mitre, anomaly, ip_status, reasons
