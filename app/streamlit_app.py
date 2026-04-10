@@ -61,47 +61,34 @@ code                         { background: #161b22 !important; }
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 
-with st.sidebar:
-    st.title("🛡️ SOC AI Platform")
-    st.caption("v3.0 — Hybrid Detection Engine")
-    st.divider()
+st.divider()
+st.subheader("🔧 Scoring Weights")
 
-    st.subheader("⚙️ Live Monitoring")
-    auto_refresh = st.checkbox("🔄 Auto-Refresh")
-    if auto_refresh:
-        refresh_rate = st.slider("Interval (sec)", 10, 120, 30)
-        time.sleep(refresh_rate)
-        st.rerun()
+use_custom = st.checkbox("Use custom weights")
 
-    st.divider()
-    st.subheader("🔧 Scoring Weights")
-    with st.expander("Configure weights"):
+if use_custom:
+    with st.expander("Configure weights", expanded=True):
         w_ml    = st.slider("ML Classifier",    0.0, 1.0, 0.25, 0.05)
         w_anom  = st.slider("Anomaly (IsoFor)", 0.0, 1.0, 0.20, 0.05)
         w_base  = st.slider("Stat. Baseline",   0.0, 1.0, 0.15, 0.05)
         w_ueba  = st.slider("UEBA",             0.0, 1.0, 0.15, 0.05)
         w_corr  = st.slider("Correlation",      0.0, 1.0, 0.15, 0.05)
         w_intel = st.slider("Threat Intel",     0.0, 1.0, 0.10, 0.05)
-        total   = w_ml + w_anom + w_base + w_ueba + w_corr + w_intel
+
+        total = w_ml + w_anom + w_base + w_ueba + w_corr + w_intel
         if abs(total - 1.0) > 0.01:
             st.warning(f"Weights sum to {total:.2f} — will be auto-normalised")
+
         CUSTOM_CONFIG = ScoringConfig(
-            weight_ml=w_ml, weight_anomaly=w_anom, weight_baseline=w_base,
-            weight_ueba=w_ueba, weight_correlation=w_corr, weight_threat_intel=w_intel,
+            weight_ml=w_ml,
+            weight_anomaly=w_anom,
+            weight_baseline=w_base,
+            weight_ueba=w_ueba,
+            weight_correlation=w_corr,
+            weight_threat_intel=w_intel,
         ).renormalize()
-    else:
-        CUSTOM_CONFIG = ScoringConfig()
-
-    st.divider()
-    st.subheader("🔗 OSINT Links")
-    st.markdown("- [MITRE ATT&CK](https://attack.mitre.org)")
-    st.markdown("- [AbuseIPDB](https://www.abuseipdb.com)")
-    st.markdown("- [VirusTotal](https://www.virustotal.com)")
-    st.markdown("- [Shodan](https://www.shodan.io)")
-    st.markdown("- [Greynoise](https://greynoise.io)")
-    st.divider()
-    st.caption("Hybrid ML · Isolation Forest · UEBA · MITRE ATT&CK")
-
+else:
+    CUSTOM_CONFIG = ScoringConfig()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEADER + KPI
