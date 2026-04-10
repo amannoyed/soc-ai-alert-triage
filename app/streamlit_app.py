@@ -1,95 +1,155 @@
+"""
+app/streamlit_app.py
+════════════════════
+SOC AI Platform — Production Dashboard v3.0
+
+Full pipeline integration:
+  Manual simulation → Full hybrid detection
+  EVTX upload → Complete SOC investigation
+  IP Lookup → Threat intelligence
+  UEBA panel → Behavioral analytics
+  Response centre → Analyst actions
+"""
+
 import streamlit as st
 import sys
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import time
+from datetime import datetime, timezone
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from predict import predict_alert, check_ip_reputation
-from log_parser import parse_evtx
-from correlation_engine import correlate_events
-from kill_chain import map_kill_chain
+from soc_pipeline        import run_from_logs, run_from_evtx, PipelineResult
+from predict             import check_ip_reputation
+from log_parser          import parse_evtx
+from timeline_engine     import get_progression_summary, get_stage_groups, get_pivot_events
+from scoring_engine      import ScoringConfig
 
-# ── Page config ───────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
 st.set_page_config(
-    page_title="SOC AI Dashboard",
+    page_title="SOC AI Platform",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── CSS ───────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CSS
+# ══════════════════════════════════════════════════════════════════════════════
+
 st.markdown("""
 <style>
-[data-testid="stSidebar"] { background-color: #0d1117; }
-.block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
-.stMetric { background-color: #161b22; border: 1px solid #30363d;
-             border-radius: 8px; padding: 12px; }
-.stAlert  { border-radius: 6px; }
-div[data-testid="stExpander"] { border: 1px solid #30363d; border-radius: 6px; }
+[data-testid="stSidebar"]   { background-color: #0d1117; }
+.block-container             { padding-top: 1.2rem; padding-bottom: 1rem; }
+div[data-testid="stMetric"] { background: #161b22; border: 1px solid #30363d;
+                               border-radius: 8px; padding: 10px 14px; }
+.stAlert                     { border-radius: 6px; }
+div[data-testid="stExpander"]{ border: 1px solid #21262d; border-radius: 6px; }
+hr                           { border-color: #21262d; }
+code                         { background: #161b22 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ══════════════════════════════════════════════════════════════════════════════
+
 with st.sidebar:
     st.title("🛡️ SOC AI Platform")
-    st.caption("v2.0 — Threat Intelligence Dashboard")
+    st.caption("v3.0 — Hybrid Detection Engine")
     st.divider()
 
-    st.subheader("⚙️ Settings")
-    auto_refresh = st.checkbox("🔄 Auto-Refresh (Live Mode)")
-    refresh_rate = st.slider("Refresh interval (sec)", 5, 60, 15)
+    st.subheader("⚙️ Live Monitoring")
+    auto_refresh = st.checkbox("🔄 Auto-Refresh")
+    if auto_refresh:
+        refresh_rate = st.slider("Interval (sec)", 10, 120, 30)
+        time.sleep(refresh_rate)
+        st.rerun()
 
     st.divider()
-    st.subheader("🔗 Quick Links")
+    st.subheader("🔧 Scoring Weights")
+    with st.expander("Configure weights"):
+        w_ml    = st.slider("ML Classifier",    0.0, 1.0, 0.25, 0.05)
+        w_anom  = st.slider("Anomaly (IsoFor)", 0.0, 1.0, 0.20, 0.05)
+        w_base  = st.slider("Stat. Baseline",   0.0, 1.0, 0.15, 0.05)
+        w_ueba  = st.slider("UEBA",             0.0, 1.0, 0.15, 0.05)
+        w_corr  = st.slider("Correlation",      0.0, 1.0, 0.15, 0.05)
+        w_intel = st.slider("Threat Intel",     0.0, 1.0, 0.10, 0.05)
+        total   = w_ml + w_anom + w_base + w_ueba + w_corr + w_intel
+        if abs(total - 1.0) > 0.01:
+            st.warning(f"Weights sum to {total:.2f} — will be auto-normalised")
+        CUSTOM_CONFIG = ScoringConfig(
+            weight_ml=w_ml, weight_anomaly=w_anom, weight_baseline=w_base,
+            weight_ueba=w_ueba, weight_correlation=w_corr, weight_threat_intel=w_intel,
+        ).renormalize()
+    else:
+        CUSTOM_CONFIG = ScoringConfig()
+
+    st.divider()
+    st.subheader("🔗 OSINT Links")
     st.markdown("- [MITRE ATT&CK](https://attack.mitre.org)")
     st.markdown("- [AbuseIPDB](https://www.abuseipdb.com)")
     st.markdown("- [VirusTotal](https://www.virustotal.com)")
     st.markdown("- [Shodan](https://www.shodan.io)")
     st.markdown("- [Greynoise](https://greynoise.io)")
-
     st.divider()
-    st.caption("Built for SOC operations · Powered by ML + MITRE ATT&CK")
+    st.caption("Hybrid ML · Isolation Forest · UEBA · MITRE ATT&CK")
 
-if auto_refresh:
-    time.sleep(refresh_rate)
-    st.rerun()
 
-# ── Header ────────────────────────────────────────────────────────────────────
-st.title("🛡️ SOC AI Threat Intelligence Dashboard")
-st.caption("AI-powered alert triage · MITRE ATT&CK mapping · Real-time log analysis")
+# ══════════════════════════════════════════════════════════════════════════════
+# HEADER + KPI
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ── KPI Row ───────────────────────────────────────────────────────────────────
+st.title("🛡️ SOC AI Threat Intelligence Platform")
+st.caption("Hybrid ML · Isolation Forest · UEBA · Time-based Correlation · Kill Chain Analysis")
+
 st.markdown("---")
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("🚨 Alerts Today",    "147", "+12")
 k2.metric("🔴 Critical",        "9",   "+3")
 k3.metric("🟠 High",            "23",  "+5")
-k4.metric("⚠️ Suspicious IPs", "31",  "+8")
-k5.metric("✅ System Status",   "Active")
+k4.metric("🧠 UEBA Anomalies",  "14",  "+2")
+k5.metric("⚠️ Suspicious IPs", "31",  "+8")
+k6.metric("✅ System",          "Active")
 st.markdown("---")
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["🔧 Manual Simulation", "📂 Log Analysis", "📊 Threat Intel"])
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TABS
+# ══════════════════════════════════════════════════════════════════════════════
+
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔧 Manual Simulation",
+    "📂 Log Investigation",
+    "📊 Threat Intel",
+    "📋 Response Centre",
+])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MANUAL SIMULATION
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 with tab1:
     st.subheader("Manual Alert Simulation")
-    st.caption("Simulate a security event and analyze it in real-time.")
+    st.caption("Run any event through the full hybrid detection pipeline.")
 
-    c1, c2, c3 = st.columns(3)
+    col1, col2, col3 = st.columns(3)
 
-    with c1:
+    with col1:
+        st.markdown("**Connection Details**")
         failed_logins = st.slider("Failed Login Attempts", 0, 50, 5)
-        ip = st.text_input("Source IP Address", "8.8.8.8")
+        ip            = st.text_input("Source IP Address", "8.8.8.8")
 
-    with c2:
-        location = st.selectbox("Origin Country", [
+    with col2:
+        st.markdown("**Origin**")
+        location = st.selectbox("Country", [
             "India", "US", "UK", "Germany", "Brazil",
             "Russia", "China", "North Korea"
         ])
@@ -97,547 +157,485 @@ with tab1:
             "Windows", "Linux", "MacOS", "Android", "iOS"
         ])
 
-    with c3:
+    with col3:
+        st.markdown("**Attack Context**")
         alert_type = st.selectbox("Alert / Attack Type", [
-            "Normal Login",
-            "Brute Force",
-            "Credential Stuffing",
-            "Password Spray",
-            "Suspicious Login",
-            "Suspicious Activity",
-            "Malware Execution",
-            "Privilege Escalation",
-            "Credential Dumping",
+            "Normal Login", "Brute Force", "Credential Stuffing",
+            "Password Spray", "Suspicious Login", "Suspicious Activity",
+            "Malware Execution", "Privilege Escalation", "Credential Dumping",
         ])
         time_of_day = st.selectbox("Time of Day", [
-            "Business Hours (9–17)",
-            "Evening (17–22)",
-            "Night (22–6)",
-            "Early Morning (6–9)"
+            "Business Hours (9–17)", "Evening (17–22)",
+            "Night (22–6)", "Early Morning (6–9)"
         ])
 
-    input_data = {
-        "failed_logins": failed_logins,
-        "location_India":       1 if location == "India"       else 0,
-        "location_US":          1 if location == "US"          else 0,
-        "location_UK":          1 if location == "UK"          else 0,
-        "location_Germany":     1 if location == "Germany"     else 0,
-        "location_Brazil":      1 if location == "Brazil"      else 0,
-        "location_Russia":      1 if location == "Russia"      else 0,
-        "location_China":       1 if location == "China"       else 0,
-        "location_North Korea": 1 if location == "North Korea" else 0,
-        "device_Windows": 1 if device == "Windows" else 0,
-        "device_Linux":   1 if device == "Linux"   else 0,
-        "device_MacOS":   1 if device == "MacOS"   else 0,
-        "device_Android": 1 if device == "Android" else 0,
-        "device_iOS":     1 if device == "iOS"     else 0,
-        "alert_type_Normal Login":        1 if alert_type == "Normal Login"        else 0,
-        "alert_type_Brute Force":         1 if alert_type == "Brute Force"         else 0,
-        "alert_type_Credential Stuffing": 1 if alert_type == "Credential Stuffing" else 0,
-        "alert_type_Password Spray":      1 if alert_type == "Password Spray"      else 0,
-        "alert_type_Suspicious Login":    1 if alert_type == "Suspicious Login"    else 0,
-    }
+    if st.button("🚨 Run Full Pipeline Analysis", type="primary",
+                 use_container_width=True):
+        # Build a synthetic log entry
+        log_entry = {
+            "alert_type":    alert_type,
+            "source_ip":     ip,
+            "failed_logins": failed_logins,
+            "location":      location,
+            "device":        device,
+            "event_id":      "SIM",
+        }
 
-    if st.button("🚨 Run Analysis", type="primary", use_container_width=True):
-        with st.spinner("Analyzing..."):
-            result, score, severity, mitre, anomaly, ip_status, reasons = predict_alert(
-                input_data, ip
-            )
+        with st.spinner("Running hybrid detection pipeline..."):
+            pr: PipelineResult = run_from_logs([log_entry], CUSTOM_CONFIG)
 
         st.markdown("---")
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Risk Score", f"{score}/100")
-        r2.metric("Severity",   severity)
-        r3.metric("ML Result",  "Threat" if "Threat" in result else "Benign")
-        r4.metric("IP Status",  ip_status[:20] + "..." if len(ip_status) > 20 else ip_status)
 
-        col_left, col_right = st.columns(2)
+        # ── Top metrics ──────────────────────────────────────────────────────
+        r1, r2, r3, r4, r5 = st.columns(5)
+        r1.metric("Final Risk",    f"{pr.final_score}/100")
+        r2.metric("Severity",      pr.severity)
+        r3.metric("ML Score",
+                  f"{pr.detection_results[0].ml_score:.0f}/100" if pr.detection_results else "—")
+        r4.metric("Anomaly Score",
+                  f"{pr.detection_results[0].anomaly_score:.0f}/100" if pr.detection_results else "—")
+        r5.metric("UEBA Score",
+                  f"{pr.ueba_results[0].anomaly_score:.0f}/100" if pr.ueba_results else "—")
 
-        with col_left:
-            if "Threat" in result:
-                st.error(f"**{result}**")
+        st.markdown("---")
+
+        left, right = st.columns(2)
+
+        with left:
+            # ── Verdict ──────────────────────────────────────────────────────
+            if pr.final_score >= 60:
+                st.error(f"**🚨 {pr.investigation.attack_classification}**")
+            elif pr.final_score >= 35:
+                st.warning(f"**⚠️ {pr.investigation.attack_classification}**")
             else:
-                st.success(f"**{result}**")
+                st.success(f"**✅ {pr.investigation.attack_classification}**")
 
-            st.info(f"🌐 **IP Intelligence:** {ip_status}")
-            st.warning(f"🧠 **Behavior:** {anomaly}")
+            st.markdown(f"**Attack Summary:** {pr.investigation.attack_summary}")
 
-            if reasons:
-                st.markdown("**📋 Detection Reasons:**")
-                for r in reasons:
-                    st.markdown(f"  - {r}")
+            ip_status, ip_score = pr.ip_intel.get(ip, ("🟢 Clean", 0))
+            st.info(f"🌐 **IP Intel:** {ip_status}")
 
-        with col_right:
+            if pr.ueba_results:
+                u = pr.ueba_results[0]
+                st.warning(f"🧠 **UEBA:** {u.anomaly_label} — {u.behavior_summary[:120]}...")
+                if u.anomalies_found:
+                    with st.expander("UEBA Anomaly Details"):
+                        for a in u.anomalies_found:
+                            st.markdown(f"  • {a}")
+
+        with right:
+            # ── Score breakdown ───────────────────────────────────────────────
+            st.markdown("**📊 Score Breakdown**")
+            if pr.scoring.layers:
+                fig, ax = plt.subplots(figsize=(5, 3))
+                names   = [l.name for l in pr.scoring.layers]
+                contribs = [l.contribution for l in pr.scoring.layers]
+                colors  = ["#58a6ff", "#56d364", "#e3b341",
+                           "#d29922", "#f85149", "#bc8cff"]
+                ax.barh(names, contribs, color=colors)
+                ax.set_xlabel("Weighted Contribution", color="white")
+                ax.set_title("Score Layer Contributions", color="white", fontsize=10)
+                ax.set_facecolor("#0d1117")
+                fig.patch.set_facecolor("#0d1117")
+                ax.tick_params(colors="white", labelsize=8)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                ax.spines["bottom"].set_color("#30363d")
+                ax.spines["left"].set_color("#30363d")
+                st.pyplot(fig)
+                plt.close()
+
+            st.caption(pr.scoring.breakdown)
+
+        # ── Detection reasoning ───────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 🧠 Analyst Reasoning")
+        for i, step in enumerate(pr.investigation.reasoning_steps, 1):
+            st.markdown(f"**{i}.** {step}")
+
+        # ── MITRE ────────────────────────────────────────────────────────────
+        if pr.mitre_techniques:
             st.markdown("**🎯 MITRE ATT&CK Techniques:**")
-            if mitre:
-                for m in mitre:
-                    st.code(m, language=None)
-            else:
-                st.markdown("_No specific techniques mapped for this alert type_")
+            cols = st.columns(min(len(pr.mitre_techniques), 3))
+            for i, m in enumerate(pr.mitre_techniques):
+                cols[i % 3].code(m, language=None)
 
-            # Risk gauge bar
-            fig, ax = plt.subplots(figsize=(4, 1.8))
-            bar_color = "#2ea043" if score < 35 else "#d29922" if score < 60 else "#f85149"
-            ax.barh(["Risk"], [score],       color=bar_color, height=0.4)
-            ax.barh(["Risk"], [100 - score], left=[score], color="#21262d", height=0.4)
-            ax.set_xlim(0, 100)
-            ax.set_xticks([0, 35, 60, 80, 100])
-            ax.set_xticklabels(["0", "Low", "Med", "High", "100"],
-                               color="white", fontsize=8)
-            ax.tick_params(axis="y", colors="white")
-            ax.set_facecolor("#0d1117")
-            fig.patch.set_facecolor("#0d1117")
-            ax.set_title(f"Risk Score: {score}/100", color="white", fontsize=9)
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            ax.spines["bottom"].set_color("#30363d")
-            ax.spines["left"].set_color("#30363d")
-            st.pyplot(fig)
-            plt.close()
-
-        # Recommended actions
+        # ── Response ─────────────────────────────────────────────────────────
         st.markdown("---")
-        st.markdown("**🛡️ Recommended Response Actions:**")
-        if score >= 80:
-            st.error("""
-**CRITICAL — Immediate action required:**
-1. Block source IP at firewall
-2. Isolate affected endpoint
-3. Reset compromised credentials
-4. Escalate to Tier 2 / Incident Response
-5. Preserve logs and open incident ticket
-            """)
-        elif score >= 60:
-            st.warning("""
-**HIGH — Respond within 1 hour:**
-1. Add IP to watchlist / rate limit
-2. Review authentication logs for this user
-3. Check for lateral movement indicators
-4. Alert asset owner
-            """)
-        elif score >= 35:
-            st.warning("""
-**MEDIUM — Investigate within 4 hours:**
-1. Monitor IP for continued activity
-2. Review user behavior baseline
-3. Check for related alerts
-            """)
-        else:
-            st.success("""
-**LOW — Standard monitoring:**
-1. Log event for audit trail
-2. No immediate action required
-            """)
+        st.markdown("### 🛡️ Recommended Actions")
+        for action in pr.investigation.recommended_actions:
+            st.markdown(f"- {action}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — LOG ANALYSIS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 2 — LOG INVESTIGATION
+# ════════════════════════════════════════════════════════════════════════════
 with tab2:
-    st.subheader("EVTX Log Analysis")
+    st.subheader("EVTX Log Investigation")
     st.caption(
-        "Upload Windows Event Log (.evtx) files for automated SOC analysis. "
-        "Supports Security logs, Sysmon logs, and System logs."
+        "Upload Windows Event Log files for full SOC investigation. "
+        "Sysmon logs, Security logs, and System logs all supported."
     )
 
     uploaded_file = st.file_uploader(
-        "Upload EVTX Log File",
-        type=["evtx"],
-        help="Max 200MB. Supports Security, Sysmon, Application event logs."
+        "Upload EVTX File", type=["evtx"],
+        help="Max 200MB. Export via Event Viewer or: wevtutil epl Security C:\\out.evtx"
     )
 
     if not uploaded_file:
-        st.info("📂 Upload an EVTX file to begin log analysis.")
+        st.info("📂 Upload an EVTX file to begin investigation.")
         st.markdown("""
-**Supported log types:**
-- `Security.evtx` — Login events, privilege changes (Event IDs: 4624, 4625, 4672)
-- `Sysmon.evtx` — Process creation, network connections (Event IDs: 1, 3, 10)
-- `System.evtx` — Service changes, driver loads
-
-**How to export logs on Windows:**
-```
-Event Viewer → Windows Logs → Security → Save All Events As...
-```
-
-**Or use this PowerShell command:**
+**Export logs on Windows:**
 ```powershell
-wevtutil epl Security C:\\Users\\YourName\\security_logs.evtx
+# Security log
+wevtutil epl Security C:\\Users\\YourName\\security.evtx
+
+# Sysmon log
+wevtutil epl Microsoft-Windows-Sysmon/Operational C:\\Users\\YourName\\sysmon.evtx
 ```
+**Supported event IDs:** 4624, 4625, 4648, 4672, 4688, 4698, 4732, 1, 3, 7, 10, 11
         """)
 
     else:
-        # Save uploaded file
-        with open("temp_analysis.evtx", "wb") as f:
+        # Save temp file
+        with open("_soc_upload.evtx", "wb") as f:
             f.write(uploaded_file.read())
 
-        with st.spinner("Parsing log file and running AI analysis..."):
-            parsed_logs = parse_evtx("temp_analysis.evtx")
+        with st.spinner("🔍 Running full SOC pipeline..."):
+            pr: PipelineResult = run_from_evtx("_soc_upload.evtx", CUSTOM_CONFIG)
 
-        st.success(f"✅ Parsed **{len(parsed_logs)} events** from `{uploaded_file.name}`")
+        # ── Header stats ──────────────────────────────────────────────────────
+        h1, h2, h3, h4, h5 = st.columns(5)
+        h1.metric("Events Parsed",   pr.raw_log_count)
+        h2.metric("Final Risk",       f"{pr.final_score}/100")
+        h3.metric("Severity",         pr.severity)
+        h4.metric("Unique IPs",       len(pr.unique_ips))
+        h5.metric("Pipeline Time",    f"{pr.pipeline_duration_ms}ms")
 
-        # ── Summary Stats ─────────────────────────────────────────────────────
-        threat_events  = [l for l in parsed_logs if l["alert_type"] != "Normal Login"]
-        normal_events  = [l for l in parsed_logs if l["alert_type"] == "Normal Login"]
-        unique_ips     = len({l["source_ip"] for l in parsed_logs})
-        threat_ips     = len({l["source_ip"] for l in threat_events})
-
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Total Events",    len(parsed_logs))
-        s2.metric("Threat Events",   len(threat_events),
-                  delta=f"{len(threat_events)} flagged",
-                  delta_color="inverse")
-        s3.metric("Normal Events",   len(normal_events))
-        s4.metric("Unique IPs",      unique_ips,
-                  delta=f"{threat_ips} threat IPs",
-                  delta_color="inverse")
+        threat_label = "🔴 THREAT DETECTED" if pr.is_threat else "🟢 NO SIGNIFICANT THREAT"
+        if pr.is_threat:
+            st.error(f"**{threat_label}** — {pr.investigation.attack_classification}")
+        else:
+            st.success(f"**{threat_label}**")
 
         st.markdown("---")
 
-        # ── Live Alert Feed ───────────────────────────────────────────────────
-        st.markdown("### 🔴 Live Alert Feed (Last 5 Events)")
+        # ══════════════════════════════════════════════════════════════════════
+        # INVESTIGATION PANEL
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown("## 📋 Investigation Report")
+        inv = pr.investigation
 
-        recent = parsed_logs[-5:]
-        for log in recent:
-            d = {
-                "failed_logins":                   log["failed_logins"],
-                f"alert_type_{log['alert_type']}": 1,
-            }
-            r, sc, sev, _, _, ip_st, _ = predict_alert(d, log["source_ip"])
-
-            if "Threat" in r:
-                st.error(
-                    f"🚨 **{log['alert_type']}** | "
-                    f"IP: `{log['source_ip']}` | "
-                    f"Event: `{log.get('event_id', '?')}` | "
-                    f"Risk: **{sc}/100** | {sev}"
-                )
-            else:
-                st.success(
-                    f"✅ **{log['alert_type']}** | "
-                    f"IP: `{log['source_ip']}` | "
-                    f"Event: `{log.get('event_id', '?')}` | "
-                    f"Risk: **{sc}/100** | {sev}"
-                )
+        with st.expander("📄 Full Investigation Report", expanded=True):
+            st.markdown(f"**Case ID:** `{inv.case_id}`")
+            st.markdown(f"**Classification:** {inv.attack_classification}")
+            st.markdown(f"**Confidence:** {inv.confidence}%")
+            st.markdown(f"**Summary:** {inv.attack_summary}")
+            st.divider()
+            st.markdown("**Timeline Narrative:**")
+            st.markdown(f"> {inv.timeline_narrative}")
+            st.divider()
+            st.markdown("**Analyst Reasoning:**")
+            for i, step in enumerate(inv.reasoning_steps, 1):
+                st.markdown(f"{i}. {step}")
 
         st.markdown("---")
 
-        # ── Two-column section: Correlation + Kill Chain ──────────────────────
-        left_col, right_col = st.columns(2)
+        # ══════════════════════════════════════════════════════════════════════
+        # THREE-COLUMN PANEL: Correlation + Kill Chain + UEBA
+        # ══════════════════════════════════════════════════════════════════════
+        c1, c2, c3 = st.columns(3)
 
-        with left_col:
-            st.markdown("### 🧠 Correlated Threat Analysis")
+        with c1:
+            st.markdown("### 🧠 Correlation")
+            corr = pr.correlation
+            st.caption(
+                f"{corr.total_events} events · "
+                f"{corr.unique_ips} IPs · "
+                f"Confidence: {corr.attack_confidence}%"
+            )
+            for alert in corr.alerts:
+                sev = alert.severity
+                fn  = (st.error   if sev == "Critical" else
+                       st.warning if sev in ("High", "Medium") else
+                       st.info)
+                fn(f"**{alert.name}** *({sev})*\n\n{alert.description[:120]}...")
 
-            alerts = correlate_events(parsed_logs)
+            if corr.windows_analyzed:
+                w = corr.windows_analyzed
+                st.caption(
+                    f"Burst: {w.get('burst',0)} · "
+                    f"Slow: {w.get('slow',0)} · "
+                    f"Chain: {w.get('chain',0)}"
+                )
 
-            for alert in alerts:
-                sev = alert["severity"]
-                if sev == "Critical":
-                    st.error(
-                        f"**🔴 {alert['type']}** *(Critical)*\n\n"
-                        f"{alert['description']}"
-                    )
-                elif sev == "High":
-                    st.warning(
-                        f"**🟠 {alert['type']}** *(High)*\n\n"
-                        f"{alert['description']}"
-                    )
-                elif sev == "Medium":
-                    st.warning(
-                        f"**🟡 {alert['type']}** *(Medium)*\n\n"
-                        f"{alert['description']}"
-                    )
-                else:
-                    st.info(
-                        f"**🟢 {alert['type']}** *(Low)*\n\n"
-                        f"{alert['description']}"
-                    )
-
-        with right_col:
-            st.markdown("### 🧬 MITRE ATT&CK Kill Chain")
-
-            stages = map_kill_chain(parsed_logs)
-
-            if stages:
-                confirmed = [s for s in stages if not s["inferred"]]
-                inferred  = [s for s in stages if s["inferred"]]
-
-                for s in confirmed:
-                    types_str = ", ".join(s["alert_types"])
-                    st.markdown(
-                        f"🔴 **{s['stage']}** "
-                        f"*(confirmed · {s['evidence_count']} events)*\n\n"
-                        f"&nbsp;&nbsp;&nbsp;&nbsp;`{types_str}`"
-                    )
-
-                if inferred:
-                    st.markdown("---")
-                    st.caption("Inferred stages (based on attack pattern):")
-                    for s in inferred:
-                        st.markdown(f"🔘 *{s['stage']}* *(inferred)*")
-
-                coverage = len(confirmed)
-                total    = 6
+        with c2:
+            st.markdown("### 🧬 Kill Chain")
+            tl_meta = pr.timeline.meta
+            if tl_meta.attack_progression:
                 st.progress(
-                    min(coverage / total, 1.0),
-                    text=f"Kill chain coverage: {coverage}/{total} confirmed stages"
+                    min(tl_meta.completeness_pct / 100, 1.0),
+                    text=f"Coverage: {tl_meta.completeness_pct}% of 6-stage chain"
                 )
+                for stage in tl_meta.attack_progression:
+                    icon = "🔴" if stage in (
+                        "Privilege Escalation", "Credential Access",
+                        "Lateral Movement", "Exfiltration") else "🟠"
+                    st.markdown(f"{icon} **{stage}**")
             else:
-                st.info("No kill chain stages detected in these logs.")
+                st.info("No kill chain stages detected.")
+
+            if tl_meta.pivot_count > 0:
+                st.warning(f"⚡ {tl_meta.pivot_count} escalation pivot(s) detected")
+
+        with c3:
+            st.markdown("### 🧠 UEBA Insights")
+            if pr.ueba_results:
+                for u in sorted(pr.ueba_results,
+                                key=lambda x: x.anomaly_score, reverse=True)[:3]:
+                    score = u.anomaly_score
+                    icon  = "🔴" if score >= 70 else "🟡" if score >= 40 else "🟢"
+                    with st.container():
+                        st.markdown(f"{icon} **{u.ip}** — Score: {score:.0f}/100")
+                        if u.spike_detected:
+                            st.caption("⚡ Activity spike detected")
+                        if u.new_location:
+                            st.caption("🌍 New location observed")
+                        if u.off_hours_access:
+                            st.caption("🌙 Off-hours access")
+                        if u.anomalies_found:
+                            st.caption(f"📋 {u.anomalies_found[0][:80]}...")
+            else:
+                st.info("No UEBA data available.")
 
         st.markdown("---")
 
-        # ── Attack Timeline ───────────────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════════════════
+        # ATTACK TIMELINE
+        # ══════════════════════════════════════════════════════════════════════
         st.markdown("### 📈 Attack Progression Timeline")
 
-        severity_num = {
-            "Normal Login":        1,
-            "Suspicious Login":    2,
-            "Suspicious Activity": 3,
-            "Password Spray":      4,
-            "Credential Stuffing": 5,
-            "Brute Force":         6,
-            "Malware Execution":   7,
-            "Privilege Escalation":8,
-            "Credential Dumping":  9,
-        }
+        if pr.timeline.entries:
+            tl = pr.timeline
 
-        color_map = {
-            1: "#2ea043", 2: "#56d364", 3: "#e3b341",
-            4: "#d29922", 5: "#f0883e", 6: "#f85149",
-            7: "#da3633", 8: "#b91c1c", 9: "#7f1d1d",
-        }
+            # Narrative
+            st.info(f"**{get_progression_summary(tl)}**")
 
-        y_vals = [severity_num.get(l["alert_type"], 1) for l in parsed_logs]
-        x_vals = list(range(len(y_vals)))
-        colors = [color_map.get(v, "#2ea043") for v in y_vals]
+            # Visual timeline
+            severity_num = {
+                "Normal Login": 1, "Suspicious Login": 2,
+                "Suspicious Activity": 3, "Password Spray": 4,
+                "Credential Stuffing": 5, "Brute Force": 6,
+                "Malware Execution": 7, "Privilege Escalation": 8,
+                "Credential Dumping": 9,
+            }
+            color_map = {
+                1: "#2ea043", 2: "#56d364", 3: "#e3b341", 4: "#d29922",
+                5: "#f0883e", 6: "#f85149", 7: "#da3633", 8: "#b91c1c",
+                9: "#7f1d1d",
+            }
 
-        fig, ax = plt.subplots(figsize=(12, 4))
-        ax.plot(x_vals, y_vals, color="#58a6ff", linewidth=1.5, alpha=0.4)
-        ax.scatter(x_vals, y_vals, c=colors, s=80, zorder=5)
+            y      = [severity_num.get(e.alert_type, 1) for e in tl.entries]
+            x      = list(range(len(y)))
+            colors = [color_map.get(v, "#2ea043") for v in y]
 
-        ax.set_yticks([1, 2, 3, 4, 5, 6, 7, 8, 9])
-        ax.set_yticklabels([
-            "Normal", "Susp.Login", "Susp.Activity",
-            "Pwd Spray", "Cred.Stuff", "Brute Force",
-            "Malware", "PrivEsc", "Cred.Dump"
-        ], fontsize=8)
+            fig, ax = plt.subplots(figsize=(12, 4))
+            ax.plot(x, y, color="#58a6ff", linewidth=1.2, alpha=0.35)
+            ax.scatter(x, y, c=colors, s=70, zorder=5)
 
-        ax.set_xlabel("Event Sequence", color="white")
-        ax.set_ylabel("Threat Level",   color="white")
-        ax.set_title("Attack Progression (each dot = one event, color = severity)",
-                     color="white")
+            # Mark pivots
+            pivots = get_pivot_events(tl)
+            for p in pivots:
+                pi = p.index
+                if pi < len(y):
+                    ax.annotate(
+                        "⬆ PIVOT",
+                        xy=(pi, y[pi]),
+                        xytext=(pi, y[pi] + 0.6),
+                        fontsize=7, color="#f85149",
+                        ha="center",
+                        arrowprops=dict(arrowstyle="-", color="#f85149", lw=0.8),
+                    )
 
-        ax.set_facecolor("#0d1117")
-        fig.patch.set_facecolor("#0d1117")
-        ax.tick_params(colors="white")
-        ax.spines["bottom"].set_color("#30363d")
-        ax.spines["left"].set_color("#30363d")
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+            ax.set_yticks([1,2,3,4,5,6,7,8,9])
+            ax.set_yticklabels([
+                "Normal","Susp.Login","Susp.Act","Pwd Spray",
+                "Cred.Stuff","Brute Force","Malware","PrivEsc","Cred.Dump"
+            ], fontsize=7)
+            ax.set_xlabel("Event Sequence", color="white")
+            ax.set_ylabel("Threat Level",   color="white")
+            ax.set_title("Attack Progression (pivots annotated)", color="white")
+            ax.set_facecolor("#0d1117")
+            fig.patch.set_facecolor("#0d1117")
+            ax.tick_params(colors="white")
+            ax.spines["bottom"].set_color("#30363d")
+            ax.spines["left"].set_color("#30363d")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
 
-        patches = [
-            mpatches.Patch(color="#2ea043", label="Normal"),
-            mpatches.Patch(color="#e3b341", label="Suspicious"),
-            mpatches.Patch(color="#f0883e", label="High Risk"),
-            mpatches.Patch(color="#da3633", label="Malware"),
-            mpatches.Patch(color="#7f1d1d", label="Critical"),
-        ]
-        ax.legend(handles=patches, loc="upper left",
-                  facecolor="#161b22", edgecolor="#30363d",
-                  labelcolor="white", fontsize=8)
-
-        st.pyplot(fig)
-        plt.close()
+            patches = [
+                mpatches.Patch(color="#2ea043", label="Normal"),
+                mpatches.Patch(color="#e3b341", label="Suspicious"),
+                mpatches.Patch(color="#f0883e", label="High Risk"),
+                mpatches.Patch(color="#da3633", label="Malware/PrivEsc"),
+                mpatches.Patch(color="#7f1d1d", label="Critical"),
+            ]
+            ax.legend(handles=patches, loc="upper left",
+                      facecolor="#161b22", edgecolor="#30363d",
+                      labelcolor="white", fontsize=8)
+            st.pyplot(fig)
+            plt.close()
 
         st.markdown("---")
 
-        # ── Detailed Event Table ──────────────────────────────────────────────
-        st.markdown("### 📊 Detailed Event Analysis")
+        # ══════════════════════════════════════════════════════════════════════
+        # EVENT TABLE
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown("### 📊 Event Analysis")
 
-        max_show = min(50, len(parsed_logs))
-        show_n   = st.slider("Number of events to display", 5, max_show, min(10, max_show))
-
-        # Filter options
-        filter_col1, filter_col2 = st.columns(2)
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
         with filter_col1:
-            show_threats_only = st.checkbox("Show threat events only", value=False)
+            threats_only = st.checkbox("Threat events only")
         with filter_col2:
-            min_risk = st.slider("Minimum risk score to show", 0, 100, 0)
+            min_risk = st.slider("Min risk score", 0, 100, 0)
+        with filter_col3:
+            show_n = st.slider("Show N events", 5,
+                               min(50, pr.raw_log_count), min(10, pr.raw_log_count))
 
-        events_to_show = parsed_logs[:show_n]
+        display_entries = pr.timeline.entries[:show_n]
 
-        for i, log in enumerate(events_to_show):
-            d = {
-                "failed_logins":                   log["failed_logins"],
-                f"alert_type_{log['alert_type']}": 1,
-            }
-            r, sc, sev, mitre_tags, anom, ip_st, rsns = predict_alert(
-                d, log["source_ip"]
-            )
+        for entry in display_entries:
+            # Match with detection result
+            det = None
+            if len(pr.detection_results) > entry.index:
+                det = pr.detection_results[entry.index]
 
-            is_threat = "Threat" in r
+            det_score = det.final_risk_score if det else 0
+            is_threat = det_score >= 35 if det else False
 
-            # Apply filters
-            if show_threats_only and not is_threat:
+            if threats_only and not is_threat:
                 continue
-            if sc < min_risk:
+            if det_score < min_risk:
                 continue
 
             icon   = "🚨" if is_threat else "✅"
+            pivot  = " ⬆ PIVOT" if entry.is_pivot else ""
             header = (
-                f"{icon} Event {i+1} | "
-                f"{log['alert_type']} | "
-                f"Risk: {sc}/100 | "
-                f"{sev} | "
-                f"IP: {log['source_ip']}"
+                f"{icon} {entry.timestamp_rel} | {entry.alert_type} | "
+                f"{entry.stage} | Risk: {det_score}/100"
+                f"{pivot}"
             )
 
-            with st.expander(header, expanded=(is_threat and i < 3)):
-                col_a, col_b, col_c = st.columns(3)
-                col_a.markdown(f"**Event ID:** `{log.get('event_id', 'N/A')}`")
-                col_b.markdown(f"**Source IP:** `{log['source_ip']}`")
-                col_c.markdown(f"**Risk Score:** `{sc}/100`")
+            with st.expander(header, expanded=(is_threat and entry.index < 3)):
+                a1, a2, a3, a4 = st.columns(4)
+                a1.markdown(f"**Event ID:** `{entry.event_id}`")
+                a2.markdown(f"**Source IP:** `{entry.source_ip}`")
+                a3.markdown(f"**MITRE:** `{entry.technique_id}`")
+                a4.markdown(f"**Dwell:** {entry.dwell_label}")
 
-                col_d, col_e = st.columns(2)
-                col_d.markdown(f"**IP Status:** {ip_st}")
-                col_e.markdown(f"**Anomaly:** {anom}")
+                b1, b2 = st.columns(2)
+                b1.markdown(f"**Stage:** {entry.stage}")
+                b2.markdown(f"**Technique:** {entry.technique_name}")
 
-                if mitre_tags:
-                    st.markdown("**🎯 MITRE ATT&CK Techniques:**")
-                    for m in mitre_tags:
-                        st.code(m, language=None)
+                if det:
+                    st.caption(
+                        f"ML: {det.ml_score:.0f}/100 | "
+                        f"Anomaly: {det.anomaly_score:.0f}/100 | "
+                        f"Baseline: {det.baseline_score:.0f}/100 | "
+                        f"{det.anomaly_label}"
+                    )
+                    if det.baseline_reasons:
+                        for r in det.baseline_reasons:
+                            st.markdown(f"  — {r}")
 
-                if rsns:
-                    st.markdown("**📋 Detection Reasons:**")
-                    for rsn in rsns:
-                        st.markdown(f"  - {rsn}")
-
-                # Inline response guidance
                 if is_threat:
-                    st.markdown("**🛡️ Suggested Response:**")
-                    if sc >= 80:
-                        st.error("Block IP · Isolate endpoint · Escalate immediately")
-                    elif sc >= 60:
-                        st.warning("Add to watchlist · Review auth logs · Alert team")
+                    if det_score >= 80:
+                        st.error("🔴 Block IP · Isolate endpoint · Escalate immediately")
+                    elif det_score >= 60:
+                        st.warning("🟠 Watchlist · Review auth logs · Alert team")
                     else:
-                        st.info("Monitor · Check baseline · Log for audit")
+                        st.info("🟡 Monitor · Check baseline · Log for audit")
+
+        # ── IOC panel ─────────────────────────────────────────────────────────
+        if inv.iocs:
+            st.markdown("---")
+            st.markdown("### 🔍 Indicators of Compromise")
+            ioc_cols = st.columns(3)
+            for i, ioc in enumerate(inv.iocs):
+                icon = ("🔴" if ioc.type == "ip" else
+                        "🎯" if ioc.type == "technique" else "🟡")
+                ioc_cols[i % 3].markdown(
+                    f"{icon} **[{ioc.type.upper()}]** `{ioc.value}`\n\n_{ioc.note}_"
+                )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — THREAT INTEL LOOKUP
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 3 — THREAT INTEL
+# ════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.subheader("IP Threat Intelligence Lookup")
-    st.caption(
-        "Real-time IP reputation checking. "
-        "Uses AbuseIPDB API if configured, otherwise checks local threat list."
-    )
+    st.subheader("IP Threat Intelligence")
+    st.caption("Real-time AbuseIPDB lookup + local threat list.")
 
-    lookup_col1, lookup_col2 = st.columns([2, 1])
-
-    with lookup_col1:
-        lookup_ip = st.text_input(
-            "Enter IP address to investigate",
-            placeholder="e.g. 185.220.101.1"
-        )
-
-    with lookup_col2:
+    lc, rc = st.columns([2, 1])
+    with lc:
+        lookup_ip = st.text_input("IP to investigate", placeholder="185.220.101.1")
+    with rc:
         st.markdown("<br>", unsafe_allow_html=True)
-        do_lookup = st.button("🔍 Investigate IP", type="primary", use_container_width=True)
+        do_lookup = st.button("🔍 Investigate", type="primary", use_container_width=True)
 
-    # Quick test IPs
-    st.caption("Quick test — click to prefill:")
+    st.caption("Quick-test IPs:")
     q1, q2, q3, q4 = st.columns(4)
-    with q1:
-        if st.button("185.220.101.1 (Tor)", use_container_width=True):
-            lookup_ip = "185.220.101.1"
-            do_lookup = True
-    with q2:
-        if st.button("45.33.32.1 (Known bad)", use_container_width=True):
-            lookup_ip = "45.33.32.1"
-            do_lookup = True
-    with q3:
-        if st.button("8.8.8.8 (Google DNS)", use_container_width=True):
-            lookup_ip = "8.8.8.8"
-            do_lookup = True
-    with q4:
-        if st.button("1.1.1.1 (Cloudflare)", use_container_width=True):
-            lookup_ip = "1.1.1.1"
-            do_lookup = True
+    if q1.button("185.220.101.1 *(Tor)*",   use_container_width=True):
+        lookup_ip, do_lookup = "185.220.101.1", True
+    if q2.button("45.33.32.1 *(Known bad)*", use_container_width=True):
+        lookup_ip, do_lookup = "45.33.32.1", True
+    if q3.button("8.8.8.8 *(Google)*",       use_container_width=True):
+        lookup_ip, do_lookup = "8.8.8.8", True
+    if q4.button("1.1.1.1 *(Cloudflare)*",   use_container_width=True):
+        lookup_ip, do_lookup = "1.1.1.1", True
 
     if do_lookup and lookup_ip:
-        with st.spinner(f"Querying threat intelligence for {lookup_ip} ..."):
+        with st.spinner(f"Querying threat intel for {lookup_ip} ..."):
             ip_status_str, ip_score = check_ip_reputation(lookup_ip)
 
         st.markdown("---")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("IP Address",   lookup_ip)
+        m2.metric("Abuse Score",  f"{ip_score}/100")
+        m3.metric("Verdict",
+                  "🔴 Malicious" if ip_score >= 75 else
+                  "🟡 Suspicious" if ip_score >= 30 else "🟢 Clean")
 
-        verdict = (
-            "🔴 Malicious"   if ip_score >= 75 else
-            "🟡 Suspicious"  if ip_score >= 30 else
-            "🟢 Clean"
-        )
+        st.markdown(f"**Full status:** {ip_status_str}")
 
-        l1, l2, l3 = st.columns(3)
-        l1.metric("IP Address",   lookup_ip)
-        l2.metric("Abuse Score",  f"{ip_score}/100")
-        l3.metric("Verdict",      verdict)
-
-        st.markdown(f"**Full Status:** {ip_status_str}")
-        st.markdown("---")
-
-        # Verdict block
         if ip_score >= 75:
-            st.error(f"""
-**🔴 MALICIOUS IP CONFIRMED**
-
-This IP has an abuse confidence score of **{ip_score}/100**.
-It is flagged as highly malicious and should be blocked immediately.
-            """)
+            st.error(f"**🔴 MALICIOUS IP** — Score {ip_score}/100. Block immediately.")
         elif ip_score >= 30:
-            st.warning(f"""
-**🟡 SUSPICIOUS IP**
-
-This IP has an abuse confidence score of **{ip_score}/100**.
-It shows signs of suspicious activity. Monitor closely and consider blocking.
-            """)
+            st.warning(f"**🟡 SUSPICIOUS IP** — Score {ip_score}/100. Monitor closely.")
         else:
-            st.success(f"""
-**🟢 CLEAN IP**
+            st.success(f"**🟢 CLEAN IP** — Score {ip_score}/100.")
 
-This IP has an abuse confidence score of **{ip_score}/100**.
-No significant threat indicators found in threat databases.
-            """)
-
-        # Response actions
-        st.markdown("**🛡️ Recommended Actions:**")
+        st.markdown("**Recommended Actions:**")
         if ip_score >= 75:
             st.markdown("""
-1. 🔴 **Block IP at firewall / WAF immediately**
-2. Search all logs for historical connections from this IP
+1. 🔴 Block IP at firewall immediately
+2. Search logs for all connections from this IP
 3. Check if any accounts authenticated from this IP
-4. Revoke any active sessions from this IP
-5. File incident report and add to permanent blocklist
-6. Notify affected users if data may be compromised
+4. Revoke active sessions
+5. Add to permanent blocklist + file incident
             """)
         elif ip_score >= 30:
             st.markdown("""
-1. 🟡 **Add IP to watchlist and monitor**
-2. Enable rate limiting for this IP
-3. Review recent authentication attempts
-4. Check for unusual data access patterns
-5. Consider temporary block if activity escalates
+1. 🟡 Add to watchlist
+2. Enable rate limiting
+3. Review recent auth attempts
+4. Temporary block if activity escalates
             """)
         else:
-            st.markdown("""
-1. 🟢 No immediate action required
-2. Continue standard logging and monitoring
-3. Re-check periodically if behavior changes
-            """)
+            st.markdown("1. 🟢 No action required — continue standard monitoring")
 
-        # OSINT links
         st.markdown("---")
-        st.markdown("**🌐 Investigate Further (OSINT):**")
-
+        st.markdown("**🌐 Investigate further:**")
         o1, o2, o3, o4, o5 = st.columns(5)
         o1.markdown(f"[AbuseIPDB](https://www.abuseipdb.com/check/{lookup_ip})")
         o2.markdown(f"[VirusTotal](https://www.virustotal.com/gui/ip-address/{lookup_ip})")
@@ -647,21 +645,118 @@ No significant threat indicators found in threat databases.
 
     else:
         st.markdown("---")
-        st.markdown("### 🌐 OSINT Resources")
-        st.markdown("""
-| Tool | Purpose |
-|---|---|
-| [AbuseIPDB](https://www.abuseipdb.com) | IP abuse reports and reputation |
-| [VirusTotal](https://www.virustotal.com) | Multi-engine IP / domain / file scanning |
-| [Shodan](https://www.shodan.io) | Internet-connected device intelligence |
-| [Greynoise](https://greynoise.io) | Internet noise vs targeted attack classification |
-| [IPInfo](https://ipinfo.io) | Geolocation, ASN, org lookup |
-| [AlienVault OTX](https://otx.alienvault.com) | Open threat intelligence sharing |
-| [URLScan](https://urlscan.io) | URL and domain scanning |
-        """)
+        st.markdown("### OSINT Reference Table")
+        st.table({
+            "Tool":        ["AbuseIPDB",     "VirusTotal",    "Shodan",        "Greynoise",     "IPInfo"],
+            "Purpose":     ["IP abuse reports","Multi-engine scan","Device intel","Noise vs targeted","Geolocation/ASN"],
+            "URL":         ["abuseipdb.com", "virustotal.com","shodan.io",     "greynoise.io",  "ipinfo.io"],
+        })
 
-        st.info(
-            "💡 **Tip:** Configure your AbuseIPDB API key in Streamlit Secrets "
-            "(`ABUSEIPDB_API_KEY`) for live reputation scores. "
-            "Without it, the system uses a local known-bad IP list."
-        )
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — RESPONSE CENTRE
+# ════════════════════════════════════════════════════════════════════════════
+with tab4:
+    st.subheader("🛡️ Response Centre")
+    st.caption("Log analyst decisions and track response actions.")
+
+    if "response_log" not in st.session_state:
+        st.session_state.response_log = []
+
+    st.markdown("### Take Action on an Alert")
+
+    ra1, ra2 = st.columns(2)
+    with ra1:
+        action_ip   = st.text_input("Target IP", placeholder="45.33.32.1")
+        action_type = st.selectbox("Action", [
+            "🔴 Block IP at Firewall",
+            "🟡 Add to Watchlist",
+            "🔍 Escalate to Tier 2",
+            "✅ Mark as False Positive",
+            "📋 Open Incident Ticket",
+            "🔒 Force Password Reset",
+            "📁 Preserve Evidence",
+            "🔕 Suppress for 24h",
+        ])
+    with ra2:
+        analyst_name  = st.text_input("Analyst Name", placeholder="John Smith")
+        action_notes  = st.text_area("Notes", placeholder="Reason for action...", height=100)
+
+    if st.button("✅ Log Action", type="primary"):
+        if action_ip and analyst_name:
+            entry = {
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "analyst":   analyst_name,
+                "ip":        action_ip,
+                "action":    action_type,
+                "notes":     action_notes,
+            }
+            st.session_state.response_log.append(entry)
+            st.success(f"✅ Action logged: {action_type} for {action_ip}")
+        else:
+            st.warning("Please fill in IP and Analyst Name.")
+
+    st.markdown("---")
+    st.markdown("### Action Log")
+
+    if st.session_state.response_log:
+        for entry in reversed(st.session_state.response_log):
+            sev_icon = ("🔴" if "Block" in entry["action"] else
+                        "🔍" if "Escalate" in entry["action"] else
+                        "✅" if "False" in entry["action"] else "📋")
+            with st.expander(
+                f"{sev_icon} {entry['timestamp']} — {entry['action']} — IP: {entry['ip']}",
+                expanded=False
+            ):
+                st.markdown(f"**Analyst:** {entry['analyst']}")
+                st.markdown(f"**Action:** {entry['action']}")
+                st.markdown(f"**Target:** `{entry['ip']}`")
+                if entry["notes"]:
+                    st.markdown(f"**Notes:** {entry['notes']}")
+
+        if st.button("🗑️ Clear Action Log"):
+            st.session_state.response_log = []
+            st.rerun()
+    else:
+        st.info("No actions logged yet. Use the form above to log analyst decisions.")
+
+    st.markdown("---")
+    st.markdown("### 📋 Quick Response Playbooks")
+
+    pb1, pb2, pb3 = st.columns(3)
+
+    with pb1:
+        with st.expander("🔴 Brute Force Playbook"):
+            st.markdown("""
+1. Identify source IP(s)
+2. Check AbuseIPDB score
+3. Block IP at firewall
+4. Review auth logs 24h
+5. Reset targeted accounts
+6. Enable MFA if not active
+7. File P2 incident ticket
+            """)
+
+    with pb2:
+        with st.expander("🔴 Credential Dumping Playbook"):
+            st.markdown("""
+1. Isolate affected endpoint immediately
+2. Assume ALL credentials compromised
+3. Rotate ALL passwords + service accounts
+4. Revoke certificates / tokens
+5. Check lateral movement indicators
+6. File P1 incident + notify management
+7. Engage IR team
+            """)
+
+    with pb3:
+        with st.expander("🟡 Suspicious Login Playbook"):
+            st.markdown("""
+1. Contact account owner
+2. Verify if travel / VPN expected
+3. Check impossible travel (time/distance)
+4. Review recent activity for account
+5. Add IP to 30-day watchlist
+6. Enable step-up authentication
+7. Log for audit trail
+            """)
