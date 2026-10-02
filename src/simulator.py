@@ -16,6 +16,12 @@ Scenarios:
     login → privilege escalation → credential dumping
   - "malware_drop": suspicious process chain ending in lsass access
   - "mixed_noise": mostly benign logins with occasional attack bursts
+  - "slow_credential_stuffing": low-and-slow 4625 trickle from rotating
+    exit nodes, then one success (tests the slow-burn detector)
+  - "lateral_movement": foothold → pivots across internal hosts →
+    privilege escalation → credential dumping (tests per-IP chains)
+  - "insider_off_hours": off-hours logins from an internal host, then
+    privilege escalation (tests hour-of-day anomaly scoring)
 
 Usage:
     sim = AttackSimulator("brute_force_escalation")
@@ -117,10 +123,89 @@ def _scenario_mixed_noise():
     return events
 
 
+def _scenario_slow_credential_stuffing(attacker_ip: str):
+    """Low-and-slow: 1-2 failed logins per event, rotating exit nodes."""
+    t = _now() - timedelta(minutes=40)
+    events = []
+    exits = ["Russia", "Netherlands", "Brazil", "Singapore"]
+    for i in range(12):
+        t += timedelta(minutes=random.randint(2, 4))
+        events.append((t, {
+            "event_id": "4625", "alert_type": "Password Spray",
+            "failed_logins": random.choice([1, 1, 2]),
+            "source_ip": attacker_ip,
+            "location": exits[i % len(exits)],
+            "device": "Linux", "process_risk": 0}))
+    t += timedelta(minutes=3)
+    events.append((t, {
+        "event_id": "4624", "alert_type": "Normal Login",
+        "failed_logins": 0, "source_ip": attacker_ip,
+        "location": exits[-1], "device": "Linux", "process_risk": 0}))
+    return events
+
+
+def _scenario_lateral_movement(attacker_ip: str):
+    """Foothold → pivots across internal hosts → escalation → dumping."""
+    t = _now() - timedelta(minutes=14)
+    events = []
+    t += timedelta(minutes=2)
+    events.append((t, {
+        "event_id": "4624", "alert_type": "Normal Login",
+        "failed_logins": 0, "source_ip": attacker_ip,
+        "location": "Russia", "device": "WS-101", "process_risk": 0}))
+    for host in ["WS-102", "WS-103", "SRV-DB-01"]:
+        t += timedelta(minutes=2)
+        events.append((t, {
+            "event_id": "4624", "alert_type": "Suspicious Activity",
+            "failed_logins": 0, "source_ip": attacker_ip,
+            "location": "Russia", "device": host, "process_risk": 0}))
+    t += timedelta(minutes=1)
+    events.append((t, {
+        "event_id": "4672", "alert_type": "Privilege Escalation",
+        "failed_logins": 0, "source_ip": attacker_ip,
+        "location": "Russia", "device": "SRV-DB-01", "process_risk": 0}))
+    t += timedelta(seconds=40)
+    events.append((t, {
+        "event_id": "10", "alert_type": "Credential Dumping",
+        "failed_logins": 0, "source_ip": None,
+        "location": "Unknown", "device": "SRV-DB-01", "process_risk": 1}))
+    return events
+
+
+def _scenario_insider_off_hours():
+    """Off-hours logins from an internal host, then escalation."""
+    now = _now()
+    t = now.replace(hour=2, minute=30, second=0, microsecond=0)
+    if t > now:  # 02:30 hasn't happened yet today → use yesterday's
+        t -= timedelta(days=1)
+    events = []
+    ip = "192.168.1.50"
+    for _ in range(3):
+        t += timedelta(minutes=25)
+        events.append((t, {
+            "event_id": "4624", "alert_type": "Normal Login",
+            "failed_logins": 0, "source_ip": ip,
+            "location": "India", "device": "WS-FIN-07", "process_risk": 0}))
+    t += timedelta(minutes=20)
+    events.append((t, {
+        "event_id": "4672", "alert_type": "Privilege Escalation",
+        "failed_logins": 0, "source_ip": ip,
+        "location": "India", "device": "WS-FIN-07", "process_risk": 0}))
+    t += timedelta(minutes=15)
+    events.append((t, {
+        "event_id": "4663", "alert_type": "Suspicious Activity",
+        "failed_logins": 0, "source_ip": ip,
+        "location": "India", "device": "WS-FIN-07", "process_risk": 0}))
+    return events
+
+
 SCENARIOS = {
     "brute_force_escalation": _scenario_brute_force_escalation,
     "malware_drop":           _scenario_malware_drop,
     "mixed_noise":            _scenario_mixed_noise,
+    "slow_credential_stuffing": _scenario_slow_credential_stuffing,
+    "lateral_movement":       _scenario_lateral_movement,
+    "insider_off_hours":      _scenario_insider_off_hours,
 }
 
 
