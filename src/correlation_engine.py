@@ -22,15 +22,15 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 
-# ── Attack chain sequences (Event ID order matters) ───────────────────────────
-# Each sequence is a list of alert_type patterns that form a known chain.
+# ── Attack chain sequences (alert-type order matters) ─────────────────────────
+# "Normal Login" inside a pattern means "a successful authentication by the
+# SAME source after attack activity" — the classic brute-force-then-login
+# signal. It contributes no MITRE technique itself (benign activity).
 KNOWN_CHAINS = [
     {
         "name":        "Brute Force → Successful Login → Privilege Escalation",
         "sequence":    ["Brute Force", "Normal Login", "Privilege Escalation"],
         "severity":    "Critical",
-        "confidence":  95,
-        "mitre":       ["T1110", "T1078", "T1068"],
         "description": "Classic attack chain: attacker brute-forced credentials, "
                        "gained access, then escalated privileges.",
     },
@@ -38,16 +38,12 @@ KNOWN_CHAINS = [
         "name":        "Credential Stuffing → Successful Login",
         "sequence":    ["Credential Stuffing", "Normal Login"],
         "severity":    "High",
-        "confidence":  85,
-        "mitre":       ["T1110.004", "T1078"],
         "description": "Credential stuffing with at least one successful authentication.",
     },
     {
         "name":        "Password Spray → Suspicious Activity",
         "sequence":    ["Password Spray", "Suspicious Activity"],
         "severity":    "High",
-        "confidence":  80,
-        "mitre":       ["T1110.003", "T1059"],
         "description": "Password spray followed by suspicious process execution — "
                        "possible foothold established.",
     },
@@ -55,8 +51,6 @@ KNOWN_CHAINS = [
         "name":        "Initial Access → Execution → Credential Dump",
         "sequence":    ["Brute Force", "Malware Execution", "Credential Dumping"],
         "severity":    "Critical",
-        "confidence":  98,
-        "mitre":       ["T1110", "T1059.001", "T1003"],
         "description": "Full attack chain: brute force, malware dropped, "
                        "credentials harvested from memory.",
     },
@@ -64,8 +58,6 @@ KNOWN_CHAINS = [
         "name":        "Suspicious Login → Privilege Escalation",
         "sequence":    ["Suspicious Login", "Privilege Escalation"],
         "severity":    "High",
-        "confidence":  82,
-        "mitre":       ["T1078", "T1068"],
         "description": "Suspicious authentication followed by privilege escalation.",
     },
 ]
@@ -164,42 +156,29 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-MITRE_STAGE_MAP = {
-    "Brute Force":          "Initial Access",
-    "Credential Stuffing":  "Initial Access",
-    "Password Spray":       "Initial Access",
-    "Suspicious Login":     "Initial Access",
-    "Normal Login":         "Initial Access",
-    "Suspicious Activity":  "Execution",
-    "Malware Execution":    "Execution",
-    "Privilege Escalation": "Privilege Escalation",
-    "Credential Dumping":   "Credential Access",
-}
+import mitre  # single source of truth for ATT&CK mappings
 
 
 def _assign_stage(alert_type: str) -> str:
-    return MITRE_STAGE_MAP.get(alert_type, "Unknown")
+    return mitre.stage_for_alert(alert_type)
 
 
 def _mark_pivots(timeline: list[TimelineEvent]) -> list[TimelineEvent]:
     """
-    Mark events where the MITRE stage advances (escalation pivots).
+    Mark events where an entity's MITRE stage advances (escalation pivots).
+    Tracked PER-IP: a pivot means *this* source escalated, not that two
+    unrelated IPs happened to appear in sequence. Benign activity never
+    counts as a stage and can never pivot.
     """
-    stage_order = [
-        "Initial Access", "Execution",
-        "Privilege Escalation", "Credential Access",
-    ]
-    prev_idx = -1
+    prev_idx: dict[str, int] = {}
     for ev in timeline:
         ev.stage = _assign_stage(ev.alert_type)
-        try:
-            idx = stage_order.index(ev.stage)
-        except ValueError:
-            idx = -1
-        if idx > prev_idx and prev_idx >= 0:
+        idx = mitre.stage_index(ev.stage)
+        last = prev_idx.get(ev.source_ip, -1)
+        if idx > last and last >= 0:
             ev.is_pivot      = True
             ev.is_escalation = True
-        prev_idx = max(prev_idx, idx)
+        prev_idx[ev.source_ip] = max(last, idx)
     return timeline
 
 
@@ -222,6 +201,10 @@ def _detect_burst(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
 
     for ip, evs in by_ip.items():
         if len(evs) >= BURST_THRESHOLD:
+            techs: list[str] = []
+            for at in {e.alert_type for e in evs}:
+                techs.extend(mitre.techniques_for_alert(at))
+            techs = list(dict.fromkeys(techs))
             alerts.append(CorrelatedAlert(
                 name             = "Burst Attack Detected",
                 severity         = "High",
@@ -230,7 +213,7 @@ def _detect_burst(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
                     f"{len(evs)} events from {ip} in under "
                     f"{WINDOW_BURST // 60} minutes — likely automated attack tool."
                 ),
-                mitre_techniques = ["T1110", "T1078"],
+                mitre_techniques = techs,
                 event_count      = len(evs),
                 window_seconds   = WINDOW_BURST,
                 first_event_ts   = evs[0].timestamp,
@@ -243,15 +226,19 @@ def _detect_burst(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
     all_ips = list(by_ip.keys())
     total   = len(window)
     if len(all_ips) >= 3 and total >= BURST_THRESHOLD * 2:
+        techs: list[str] = []
+        for at in {e.alert_type for e in window}:
+            techs.extend(mitre.techniques_for_alert(at))
+        techs = list(dict.fromkeys(techs))
         alerts.append(CorrelatedAlert(
             name             = "Distributed Burst Attack",
             severity         = "Critical",
-            confidence       = 88,
+            confidence       = min(92, 55 + 5 * len(all_ips) + min(10, total // 5)),
             description      = (
                 f"{total} events from {len(all_ips)} distinct IPs in "
                 f"{WINDOW_BURST // 60} min — coordinated attack."
             ),
-            mitre_techniques = ["T1110", "T1078", "T1199"],
+            mitre_techniques = techs,
             event_count      = total,
             window_seconds   = WINDOW_BURST,
             first_event_ts   = window[0].timestamp,
@@ -287,6 +274,11 @@ def _detect_slow_brute_force(events: list[TimelineEvent]) -> list[CorrelatedAler
             span  = max((last - first).total_seconds(), 1)
             rate  = len(evs) / (span / 60)  # events per minute
 
+            techs: list[str] = []
+            for at in {e.alert_type for e in evs}:
+                techs.extend(mitre.techniques_for_alert(at))
+            techs = list(dict.fromkeys(techs))
+
             alerts.append(CorrelatedAlert(
                 name             = "Slow Brute Force Attack",
                 severity         = "High",
@@ -296,7 +288,7 @@ def _detect_slow_brute_force(events: list[TimelineEvent]) -> list[CorrelatedAler
                     f"{span/60:.1f} min at {rate:.1f} attempts/min — "
                     f"slow credential attack to evade rate limiting."
                 ),
-                mitre_techniques = ["T1110", "T1110.001"],
+                mitre_techniques = techs,
                 event_count      = len(evs),
                 window_seconds   = WINDOW_SLOW,
                 first_event_ts   = timestamps[0],
@@ -309,6 +301,14 @@ def _detect_slow_brute_force(events: list[TimelineEvent]) -> list[CorrelatedAler
 
 
 def _detect_chains(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
+    """
+    Match known attack sequences PER SOURCE IP.
+
+    A chain is only meaningful when one entity progresses through the stages —
+    matching "IP-A brute-forces, IP-B logs in, IP-C escalates" as a single
+    campaign was the old cross-entity bug. Confidence is computed from
+    evidence (pattern length + supporting events), never hardcoded.
+    """
     alerts = []
     if not events:
         return alerts
@@ -316,38 +316,61 @@ def _detect_chains(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
     anchor = _parse_ts(events[-1].timestamp)
     window = _window_filter(events, anchor, WINDOW_CHAIN)
 
-    # Build ordered alert-type sequence (de-duplicated consecutive)
-    sequence = []
+    by_ip: dict[str, list[TimelineEvent]] = defaultdict(list)
     for e in window:
-        if not sequence or sequence[-1] != e.alert_type:
-            sequence.append(e.alert_type)
+        by_ip[e.source_ip].append(e)
 
-    for chain in KNOWN_CHAINS:
-        pattern = chain["sequence"]
-        # Check if pattern appears as a subsequence
-        idx, matched = 0, 0
-        for atype in sequence:
-            if matched < len(pattern) and atype == pattern[matched]:
-                matched += 1
-            if matched == len(pattern):
-                idx += 1
-                matched = 0
+    for ip, evs in by_ip.items():
+        evs_sorted = sorted(evs, key=lambda e: _parse_ts(e.timestamp))
 
-        if idx >= 1:
-            unique_ips = list({e.source_ip for e in window})
-            alerts.append(CorrelatedAlert(
-                name             = chain["name"],
-                severity         = chain["severity"],
-                confidence       = chain["confidence"],
-                description      = chain["description"],
-                mitre_techniques = chain["mitre"],
-                event_count      = len(window),
-                window_seconds   = WINDOW_CHAIN,
-                first_event_ts   = window[0].timestamp,
-                last_event_ts    = window[-1].timestamp,
-                source_ips       = unique_ips,
-                attack_type      = "chain",
-            ))
+        # Ordered alert-type sequence, de-duplicated consecutive repeats
+        sequence = []
+        for e in evs_sorted:
+            if not sequence or sequence[-1] != e.alert_type:
+                sequence.append(e.alert_type)
+
+        for chain in KNOWN_CHAINS:
+            pattern = chain["sequence"]
+
+            # Count non-overlapping subsequence matches
+            matched_runs, i = 0, 0
+            for atype in sequence:
+                if atype == pattern[i]:
+                    i += 1
+                    if i == len(pattern):
+                        matched_runs += 1
+                        i = 0
+
+            if matched_runs >= 1:
+                supporting = sum(1 for e in evs_sorted
+                                 if e.alert_type in pattern)
+                # Evidence-based confidence: base for completing the pattern,
+                # more for longer patterns and richer supporting evidence.
+                # Documented heuristic — not a calibrated probability.
+                confidence = min(
+                    95, 55 + 8 * len(pattern) + min(15, supporting))
+
+                techniques: list[str] = []
+                for step in pattern:
+                    techniques.extend(mitre.techniques_for_alert(step))
+                techniques = list(dict.fromkeys(techniques))
+
+                alerts.append(CorrelatedAlert(
+                    name             = chain["name"],
+                    severity         = chain["severity"],
+                    confidence       = confidence,
+                    description      = (
+                        f"Source {ip}: {chain['description']} "
+                        f"({supporting} supporting events within "
+                        f"{WINDOW_CHAIN // 60} min)."),
+                    mitre_techniques = techniques,
+                    event_count      = supporting,
+                    window_seconds   = WINDOW_CHAIN,
+                    first_event_ts   = evs_sorted[0].timestamp,
+                    last_event_ts    = evs_sorted[-1].timestamp,
+                    source_ips       = [ip],
+                    attack_type      = "chain",
+                ))
 
     return alerts
 
@@ -378,16 +401,21 @@ def correlate_events(raw_logs: list[dict]) -> CorrelationResult:
             windows_analyzed={"burst": 0, "slow": 0, "chain": 0},
         )
 
-    # Build timeline events, assign timestamps if missing
-    now = datetime.now(timezone.utc)
+    # Build timeline events — only events WITH real timestamps take part in
+    # time-window detection. Events without timestamps are counted in totals
+    # but excluded from temporal analysis. We never invent event times.
     timeline: list[TimelineEvent] = []
-    for i, log in enumerate(raw_logs):
-        ts = log.get("timestamp") or (now - timedelta(seconds=(len(raw_logs)-i)*10)).isoformat()
+    untimed = 0
+    for log in raw_logs:
+        ts = log.get("timestamp")
+        if not ts:
+            untimed += 1
+            continue
         timeline.append(TimelineEvent(
             timestamp     = ts,
             event_id      = str(log.get("event_id", "?")),
             alert_type    = log.get("alert_type", "Normal Login"),
-            source_ip     = log.get("source_ip", "0.0.0.0"),
+            source_ip     = log.get("source_ip") or "unknown",
             failed_logins = int(log.get("failed_logins", 0)),
             location      = log.get("location", "Unknown"),
             device        = log.get("device", "Unknown"),
@@ -415,8 +443,8 @@ def correlate_events(raw_logs: list[dict]) -> CorrelationResult:
                         key=lambda a: SEVERITY_ORDER.get(a.severity, 0),
                         reverse=True)
 
-    # Overall stats
-    unique_ips = list({e.source_ip for e in timeline})
+    # Overall stats — across ALL raw logs, including untimed ones
+    unique_ips = list({(l.get("source_ip") or "unknown") for l in raw_logs})
     sev_vals   = [SEVERITY_ORDER.get(a.severity, 0) for a in all_alerts]
     max_sev    = max(sev_vals, default=0)
     sev_labels = {v: k for k, v in SEVERITY_ORDER.items()}
@@ -431,14 +459,14 @@ def correlate_events(raw_logs: list[dict]) -> CorrelationResult:
         conf = 0
 
     # Summary text
-    summary = _build_summary(all_alerts, timeline, unique_ips, conf)
+    summary = _build_summary(all_alerts, timeline, unique_ips, conf,
+                             total_events=len(raw_logs), untimed=untimed)
 
     return CorrelationResult(
         alerts            = all_alerts,
         timeline          = timeline,
         attack_confidence = conf,
         highest_severity  = highest,
-        total_events      = len(timeline),
         unique_ips        = len(unique_ips),
         attack_summary    = summary,
         windows_analyzed  = {
@@ -446,18 +474,24 @@ def correlate_events(raw_logs: list[dict]) -> CorrelationResult:
             "slow":  len(slow_alerts),
             "chain": len(chain_alerts),
         },
+        total_events      = len(raw_logs),
     )
 
 
 def _build_summary(alerts: list[CorrelatedAlert],
                    timeline: list[TimelineEvent],
                    unique_ips: list[str],
-                   confidence: int) -> str:
+                   confidence: int,
+                   total_events: int = 0,
+                   untimed: int = 0) -> str:
+    timed_note = (f" {untimed} event(s) had no timestamp and were excluded "
+                  f"from time-window analysis." if untimed else "")
     if not alerts:
         types = list({e.alert_type for e in timeline})
         return (
-            f"Analyzed {len(timeline)} events from {len(unique_ips)} IP(s). "
+            f"Analyzed {total_events} events from {len(unique_ips)} IP(s). "
             f"Event types: {', '.join(types)}. No attack patterns correlated."
+            + timed_note
         )
 
     top = alerts[0]
@@ -465,6 +499,7 @@ def _build_summary(alerts: list[CorrelatedAlert],
         f"{len(alerts)} correlated alert(s) from {len(unique_ips)} unique IP(s). "
         f"Primary: '{top.name}' (confidence {top.confidence}%). "
         f"Overall campaign confidence: {confidence}%."
+        + timed_note
     ]
 
     chain = [a for a in alerts if a.attack_type == "chain"]

@@ -27,7 +27,10 @@ from correlation_engine  import correlate_events, CorrelationResult
 from scoring_engine      import compute_score_from_batch, ScoringResult, ScoringConfig
 from investigation_engine import investigate, InvestigationReport
 from timeline_engine     import build_timeline, TimelineResult, get_progression_summary
-from predict             import check_ip_reputation, map_mitre, ATTACK_RISK
+from predict             import check_ip_reputation
+import feedback_model
+import mitre
+from triage_store        import TriageStore
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -61,6 +64,7 @@ class PipelineResult:
     alert_type_counts:   dict[str, int]
     pipeline_duration_ms: int
     timestamp:           str
+    triage_alert_ids:   list = field(default_factory=list)  # queue ids (if ingested)
 
     def to_summary_dict(self) -> dict:
         """Lightweight dict for API/logging (no nested objects)."""
@@ -95,6 +99,8 @@ def _batch_ip_intel(ips: list[str]) -> dict:
                         "172.19.", "172.2", "127.", "0.")
     seen = set()
     for ip in ips:
+        if not ip or ip == "unknown":
+            continue  # no usable IP — nothing to look up
         if ip in seen:
             continue
         seen.add(ip)
@@ -110,31 +116,10 @@ def _batch_ip_intel(ips: list[str]) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EVENT PREP — convert log dicts to detection-engine format
+# EVENT PREP — the detection engine takes RAW log dicts and extracts its own
+# features internally. Callers must never hand-build model features (that was
+# the old label-leakage vector).
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _log_to_detection_input(log: dict) -> dict:
-    """Convert a parsed log dict into one-hot encoded detection_engine input."""
-    alert_type = log.get("alert_type", "Normal Login")
-    location   = log.get("location",   "Unknown")
-    device     = log.get("device",     "Unknown")
-
-    data = {"failed_logins": int(log.get("failed_logins", 0))}
-
-    # One-hot alert type
-    for at in list(ATTACK_RISK.keys()) + ["Normal Login"]:
-        data[f"alert_type_{at}"] = 1 if alert_type == at else 0
-
-    # One-hot location
-    for loc in ("India", "US", "UK", "Germany", "Brazil",
-                "Russia", "China", "North Korea"):
-        data[f"location_{loc}"] = 1 if location == loc else 0
-
-    # One-hot device
-    for dev in ("Windows", "Linux", "MacOS", "Android", "iOS"):
-        data[f"device_{dev}"] = 1 if device == dev else 0
-
-    return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -145,6 +130,7 @@ def run_pipeline(
     evtx_path:    Optional[str] = None,
     raw_logs:     Optional[list[dict]] = None,
     scoring_config: Optional[ScoringConfig] = None,
+    ingest:       bool = True,
 ) -> PipelineResult:
     """
     Run the full SOC detection pipeline.
@@ -154,6 +140,8 @@ def run_pipeline(
     evtx_path     : path to a .evtx file (mutually exclusive with raw_logs)
     raw_logs      : pre-parsed list of log dicts
     scoring_config: optional custom ScoringConfig
+    ingest        : when True, scored alerts (risk >= 35) are added to the
+                    persistent triage queue (deduplicated)
 
     Returns
     -------
@@ -180,7 +168,7 @@ def run_pipeline(
         result = analyze_from_log(log)
         ueba_results.append(result)
         # Keep worst result per IP
-        ip = log.get("source_ip", "0.0.0.0")
+        ip = log.get("source_ip") or "unknown"
         if ip not in ueba_by_ip or result.anomaly_score > ueba_by_ip[ip].anomaly_score:
             ueba_by_ip[ip] = result
 
@@ -189,12 +177,11 @@ def run_pipeline(
     # ── Stage 2: Correlation ──────────────────────────────────────────────────
     correlation: CorrelationResult = correlate_events(logs)
 
-    # ── Stage 3: Detection (per-event) ────────────────────────────────────────
-    detection_inputs  = [_log_to_detection_input(log) for log in logs]
-    detection_results: list[DetectionResult] = analyze_batch(detection_inputs)
+    # ── Stage 3: Detection (per-event, raw logs in) ─────────────────────────────
+    detection_results: list[DetectionResult] = analyze_batch(logs)
 
     # ── Stage 4: Threat Intel (deduplicated) ──────────────────────────────────
-    all_ips    = [log.get("source_ip", "0.0.0.0") for log in logs]
+    all_ips    = [log.get("source_ip") or "unknown" for log in logs]
     unique_ips = list(dict.fromkeys(all_ips))
     ip_intel   = _batch_ip_intel(unique_ips)
 
@@ -203,12 +190,19 @@ def run_pipeline(
     max_intel_score = max(ip_scores.values(), default=0)
 
     # ── Stage 5: Scoring ──────────────────────────────────────────────────────
+    # Analyst-feedback probabilities (None when the feedback model is
+    # untrained — cold start is normal and handled as "no signal").
+    fb_probs = None
+    if feedback_model.available():
+        fb_probs = [feedback_model.threat_probability(log) for log in logs]
+
     scoring: ScoringResult = compute_score_from_batch(
         detection_results  = detection_results,
         ueba_results       = list(ueba_by_ip.values()),
         correlation_result = correlation,
         ip_abuse_scores    = ip_scores,
         config             = scoring_config,
+        feedback_probs     = fb_probs,
     )
 
     # ── Stage 6: Investigation ────────────────────────────────────────────────
@@ -245,6 +239,21 @@ def run_pipeline(
     end = datetime.now(timezone.utc)
     duration_ms = int((end - start).total_seconds() * 1000)
 
+    # ── Stage 8: Triage queue ─────────────────────────────────────────────────
+    triage_ids: list[int] = []
+    if ingest:
+        store = TriageStore()
+        # Correlation alerts are first-class queue entries (one per IP)
+        for alert in correlation.alerts:
+            triage_ids.extend(store.ingest_correlation(alert))
+        # ...plus individual high-risk events as supporting context
+        for log, det in zip(logs, detection_results):
+            aid = store.ingest_detection(
+                log, det.final_risk_score, det.severity,
+                mitre=mitre.techniques_for_alert(log.get("alert_type", "")))
+            if aid and aid not in triage_ids:
+                triage_ids.append(aid)
+
     return PipelineResult(
         raw_log_count       = len(logs),
         parsed_events       = logs,
@@ -264,6 +273,7 @@ def run_pipeline(
         alert_type_counts   = alert_type_counts,
         pipeline_duration_ms = duration_ms,
         timestamp           = start.isoformat(),
+        triage_alert_ids    = triage_ids,
     )
 
 
@@ -309,15 +319,17 @@ def _empty_result() -> PipelineResult:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_from_logs(logs: list[dict],
-                  config: Optional[ScoringConfig] = None) -> PipelineResult:
+                  config: Optional[ScoringConfig] = None,
+                  ingest: bool = True) -> PipelineResult:
     """Shorthand: run pipeline with pre-parsed log list."""
-    return run_pipeline(raw_logs=logs, scoring_config=config)
+    return run_pipeline(raw_logs=logs, scoring_config=config, ingest=ingest)
 
 
 def run_from_evtx(path: str,
-                  config: Optional[ScoringConfig] = None) -> PipelineResult:
+                  config: Optional[ScoringConfig] = None,
+                  ingest: bool = True) -> PipelineResult:
     """Shorthand: run pipeline from EVTX file path."""
-    return run_pipeline(evtx_path=path, scoring_config=config)
+    return run_pipeline(evtx_path=path, scoring_config=config, ingest=ingest)
 
 
 if __name__ == "__main__":

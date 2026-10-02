@@ -18,46 +18,16 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+import mitre  # single source of truth for ATT&CK mappings
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MITRE ATT&CK STAGE MAPPING
+# PRESENTATION MAPPING (colors/severity per stage — display only)
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Maps alert_type → (tactic, technique_id, technique_name, tactic_order)
-STAGE_MAP: dict[str, tuple[str, str, str, int]] = {
-    "Normal Login":         ("Initial Access",       "T1078",     "Valid Accounts",                     1),
-    "Brute Force":          ("Initial Access",       "T1110",     "Brute Force",                        1),
-    "Credential Stuffing":  ("Initial Access",       "T1110.004", "Credential Stuffing",                1),
-    "Password Spray":       ("Initial Access",       "T1110.003", "Password Spraying",                  1),
-    "Suspicious Login":     ("Initial Access",       "T1078",     "Valid Accounts (Suspicious)",        1),
-    "Suspicious Activity":  ("Execution",            "T1059",     "Command & Scripting Interpreter",    2),
-    "Malware Execution":    ("Execution",            "T1059.001", "PowerShell / Script Execution",      2),
-    "Privilege Escalation": ("Privilege Escalation", "T1068",     "Exploitation for PrivEsc",           3),
-    "Credential Dumping":   ("Credential Access",    "T1003",     "OS Credential Dumping",              4),
-}
-
-# Tactic order (for escalation detection)
-TACTIC_ORDER = [
-    "Reconnaissance",
-    "Resource Development",
-    "Initial Access",
-    "Execution",
-    "Persistence",
-    "Privilege Escalation",
-    "Defense Evasion",
-    "Credential Access",
-    "Discovery",
-    "Lateral Movement",
-    "Collection",
-    "Command and Control",
-    "Exfiltration",
-    "Impact",
-]
-
-TACTIC_IDX = {t: i for i, t in enumerate(TACTIC_ORDER)}
 
 # Color coding for UI
 STAGE_COLORS = {
+    "Benign":               "#2ea043",
     "Initial Access":       "#f0883e",
     "Execution":            "#da3633",
     "Persistence":          "#b91c1c",
@@ -72,6 +42,7 @@ STAGE_COLORS = {
 }
 
 SEVERITY_FOR_STAGE = {
+    "Benign":               "Low",
     "Initial Access":       "Medium",
     "Execution":            "High",
     "Persistence":          "High",
@@ -135,6 +106,7 @@ class TimelineMeta:
     attack_progression: list[str]   # ordered stage names
     has_full_chain:  bool
     completeness_pct: int           # % of known 6-stage chain covered
+    untimed_events: int = 0         # events with no timestamp (excluded from time math)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -249,50 +221,63 @@ def build_timeline(raw_logs: list[dict]) -> TimelineResult:
 
     # Parse and sort by time
     now = datetime.now(timezone.utc)
-    events = []
-    for i, log in enumerate(raw_logs):
-        ts = log.get("timestamp") or (now - timedelta(seconds=(len(raw_logs)-i)*30)).isoformat()
-        events.append((ts, log))
+    # Parse and sort by time. Events WITHOUT a real timestamp are kept
+    # separate — we never invent event times. They are appended after the
+    # timed events marked "time unknown" and excluded from pivot/dwell math.
+    timed   = [(log.get("timestamp"), log) for log in raw_logs
+               if log.get("timestamp")]
+    untimed = [log for log in raw_logs if not log.get("timestamp")]
 
-    events.sort(key=lambda x: _parse_ts(x[0]))
+    timed.sort(key=lambda x: _parse_ts(x[0]))
 
-    first_dt = _parse_ts(events[0][0])
-    last_dt  = _parse_ts(events[-1][0])
+    first_dt = _parse_ts(timed[0][0]) if timed else None
+    last_dt  = _parse_ts(timed[-1][0]) if timed else None
 
     entries: list[TimelineEntry] = []
-    max_stage_seen = -1
+    max_stage_seen: dict[str, int] = {}   # per-IP: pivots are per-entity
     stage_last_ts: dict[str, datetime] = {}
 
-    for idx, (ts, log) in enumerate(events):
+    def _build_entry(idx: int, ts: Optional[str], log: dict,
+                     timed_event: bool) -> TimelineEntry:
+        nonlocal max_stage_seen
         alert_type = log.get("alert_type", "Normal Login")
-        mapping    = STAGE_MAP.get(alert_type,
-                                   ("Unknown", "T????", alert_type, 0))
+        mapping    = mitre.timeline_mapping(alert_type)
         stage, tid, tname, stage_ord = mapping
 
-        cur_dt    = _parse_ts(ts)
-        tactic_ord = TACTIC_IDX.get(stage, 99)
+        tactic_ord = mitre.stage_index(stage)
+        ip = log.get("source_ip") or "?"
 
-        # Pivot / escalation detection
-        is_escalation = tactic_ord > max_stage_seen
-        is_pivot      = (is_escalation and max_stage_seen >= 0
-                         and tactic_ord > max_stage_seen)
-        max_stage_seen = max(max_stage_seen, tactic_ord)
+        if timed_event and stage != "Benign" and first_dt is not None:
+            cur_dt = _parse_ts(ts)  # type: ignore[arg-type]
+            # Pivot / escalation detection — per-IP, and the first event
+            # from an IP is never an escalation; benign never escalates.
+            last_seen = max_stage_seen.get(ip, -1)
+            is_escalation = last_seen >= 0 and tactic_ord > last_seen
+            is_pivot      = is_escalation
+            max_stage_seen[ip] = max(last_seen, tactic_ord)
 
-        # Dwell time within this stage
-        dwell_secs: Optional[int] = None
-        if stage in stage_last_ts:
-            dwell_secs = int((cur_dt - stage_last_ts[stage]).total_seconds())
-        stage_last_ts[stage] = cur_dt
+            # Dwell time within this stage
+            dwell_secs: Optional[int] = None
+            if stage in stage_last_ts:
+                dwell_secs = int((cur_dt - stage_last_ts[stage]).total_seconds())
+            stage_last_ts[stage] = cur_dt
+
+            ts_rel = _rel_time(first_dt, cur_dt)
+            ts_str = ts or "unknown"
+        else:
+            is_escalation, is_pivot, dwell_secs = False, False, None
+            ts_rel = "time unknown"
+            ts_str = ts or "unknown"
 
         rc = _risk_contribution(alert_type, int(log.get("failed_logins", 0)), is_pivot)
 
-        entries.append(TimelineEntry(
+        return TimelineEntry(
             index           = idx,
-            timestamp       = ts,
-            timestamp_rel   = _rel_time(first_dt, cur_dt),
+            timestamp       = ts_str,
+            timestamp_rel   = ts_rel,
             event_id        = str(log.get("event_id", "?")),
             alert_type      = alert_type,
-            source_ip       = log.get("source_ip",    "?"),
+            source_ip       = log.get("source_ip") or "?",
             failed_logins   = int(log.get("failed_logins", 0)),
             location        = log.get("location",     "Unknown"),
             device          = log.get("device",       "Unknown"),
@@ -308,16 +293,30 @@ def build_timeline(raw_logs: list[dict]) -> TimelineResult:
             severity        = SEVERITY_FOR_STAGE.get(stage, "Low"),
             dwell_seconds   = dwell_secs,
             dwell_label     = _dwell_label(dwell_secs),
-        ))
+        )
+
+    for idx, (ts, log) in enumerate(timed):
+        entries.append(_build_entry(idx, ts, log, True))
+    for j, log in enumerate(untimed):
+        entries.append(_build_entry(len(timed) + j, None, log, False))
 
     # ── Metadata ──────────────────────────────────────────────────────────────
-    duration_s  = int((last_dt - first_dt).total_seconds())
+    if first_dt is not None and last_dt is not None:
+        duration_s  = int((last_dt - first_dt).total_seconds())
+        first_ts_s  = timed[0][0]
+        last_ts_s   = timed[-1][0]
+    else:
+        duration_s  = 0
+        first_ts_s  = ""
+        last_ts_s   = ""
     stages_seen = list(dict.fromkeys(e.stage for e in entries))   # ordered, unique
     pivots      = [e for e in entries if e.is_pivot]
     escalations = [e for e in entries if e.is_escalation]
 
-    # Attack progression (stage names in order of first appearance)
-    progression = list(dict.fromkeys(e.stage for e in entries if e.stage != "Unknown"))
+    # Attack progression (stage names in order of first appearance —
+    # benign and unknown stages are not attack progression)
+    progression = list(dict.fromkeys(
+        e.stage for e in entries if e.stage not in ("Unknown", "Benign")))
 
     # Chain completeness (out of 6 canonical stages)
     canonical_6 = {
@@ -329,18 +328,19 @@ def build_timeline(raw_logs: list[dict]) -> TimelineResult:
     has_chain   = completeness >= 50
 
     meta = TimelineMeta(
-        total_events       = len(entries),
+        total_events       = len(raw_logs),
         unique_stages      = stages_seen,
         stage_count        = len(set(stages_seen)),
         pivot_count        = len(pivots),
         escalation_count   = len(escalations),
-        first_ts           = events[0][0],
-        last_ts            = events[-1][0],
+        first_ts           = first_ts_s,
+        last_ts            = last_ts_s,
         duration_seconds   = duration_s,
         duration_label     = _duration_label(duration_s),
         attack_progression = progression,
         has_full_chain     = has_chain,
         completeness_pct   = completeness,
+        untimed_events     = len(untimed),
     )
 
     return TimelineResult(entries=entries, meta=meta)
