@@ -1,26 +1,28 @@
 """
 app/streamlit_app.py
 ════════════════════
-SOC AI Platform — Production Dashboard v3.1
+SOC AI Platform — real-time triage console.
 
-Fixes vs v3.0:
-  - Sidebar widgets now INSIDE with st.sidebar: block (were leaking into main page)
-  - Import path set BEFORE any src imports (fixes Streamlit Cloud startup crash)
-  - All imports wrapped in try/except with a clear human-readable error gate
-  - ioc.type / ioc.value / ioc.note accessed safely (works for both dataclass and dict)
-  - Unique Streamlit widget keys throughout (no DuplicateWidgetID errors)
-  - show_n slider safe minimum (no crash when raw_log_count = 0)
-  - EVTX upload writes to /tmp (writable on Streamlit Cloud)
-  - All tabs fully complete — nothing truncated
-  - Session summary panel added to Response Centre
+Tabs:
+  🔴 Live Monitor       — simulator or watch-folder feed → pipeline → queue
+  🔧 Scenario Simulator — "what would the pipeline do with this event?"
+  📂 Log Investigation  — EVTX upload → full pipeline
+  📊 Threat Intel       — AbuseIPDB lookup
+  📋 Triage Queue       — persistent alert queue + analyst workflow
+
+Honesty rules enforced in this UI:
+  - No hardcoded KPI numbers; header metrics come from the triage DB.
+  - The simulator is labeled SIMULATED everywhere it appears.
+  - The scenario tab asks for RAW event parameters (event ID, hour, …);
+    the pipeline derives the category — the user never hands it the label.
+  - Empty parse results show an honest empty state, never fake events.
 """
 
 import streamlit as st
 import sys
 import os
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import time
+import matplotlib.pyplot as plt
 from datetime import datetime, timezone
 
 # ── CRITICAL: set sys.path BEFORE any src imports ─────────────────────────────
@@ -29,34 +31,39 @@ _SRC_DIR = os.path.join(_APP_DIR, "..", "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-# ── Imports — wrapped so startup error is readable, not a raw traceback ───────
+# ── Imports — wrapped so startup errors are readable ──────────────────────────
 try:
     from soc_pipeline    import run_from_logs, run_from_evtx, PipelineResult
-    from predict         import check_ip_reputation
-    from log_parser      import parse_evtx
-    from timeline_engine import get_progression_summary, get_pivot_events
     from scoring_engine  import ScoringConfig
-    _IMPORTS_OK    = True
-    _IMPORT_ERROR  = ""
-except Exception as _imp_err:
+    from predict         import check_ip_reputation
+    from log_parser      import parse_evtx, EVENT_ID_MAP
+    from timeline_engine import get_progression_summary, get_pivot_events
+    from triage_store    import TriageStore
+    from simulator       import AttackSimulator, SCENARIOS
+    from ingest          import WatchFolder
+    import feedback_model
+    import mitre
+    _IMPORTS_OK   = True
+    _IMPORT_ERROR = ""
+except Exception as _imp_err:  # noqa: BLE001
     _IMPORTS_OK   = False
     _IMPORT_ERROR = str(_imp_err)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE CONFIG  (must be the very first Streamlit call)
-# ══════════════════════════════════════════════════════════════════════════════
-
 st.set_page_config(
-    page_title="SOC AI Platform",
+    page_title="SOC AI Triage Console",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CSS
-# ══════════════════════════════════════════════════════════════════════════════
+
+def _json_loads(s):
+    import json as _json
+    try:
+        return _json.loads(s)
+    except Exception:
+        return []
 
 st.markdown("""
 <style>
@@ -64,7 +71,6 @@ st.markdown("""
 .block-container              { padding-top: 1.2rem; padding-bottom: 1rem; }
 div[data-testid="stMetric"]  { background: #161b22; border: 1px solid #30363d;
                                 border-radius: 8px; padding: 10px 14px; }
-.stAlert                      { border-radius: 6px; }
 div[data-testid="stExpander"] { border: 1px solid #21262d; border-radius: 6px; }
 hr                            { border-color: #21262d; }
 code                          { background: #161b22 !important; }
@@ -72,787 +78,574 @@ code                          { background: #161b22 !important; }
 """, unsafe_allow_html=True)
 
 
+if not _IMPORTS_OK:
+    st.title("🛡️ SOC AI Triage Console")
+    st.error(f"**Startup Error — module import failed:**\n\n```\n{_IMPORT_ERROR}\n```")
+    st.info("Check Streamlit logs; most likely a missing dependency. "
+            "`pip install -r requirements.txt` then **Manage app → Reboot app**.")
+    st.stop()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR  — ALL sidebar widgets must live inside this block
+# SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
-    st.title("🛡️ SOC AI Platform")
-    st.caption("v3.1 — Hybrid Detection Engine")
+    st.title("🛡️ SOC AI Triage")
+    st.caption("rules · Isolation Forest · UEBA · correlation")
     st.divider()
 
-    # ── Live monitoring ───────────────────────────────────────────────────────
     st.subheader("⚙️ Live Monitoring")
-    auto_refresh = st.checkbox("🔄 Auto-Refresh", key="sb_autorefresh")
-    if auto_refresh:
-        refresh_rate = st.slider("Interval (sec)", 10, 120, 30, key="sb_interval")
-        time.sleep(refresh_rate)
-        st.rerun()
+    auto_refresh = st.checkbox("🔄 Auto-refresh", key="sb_autorefresh",
+                               help="Refresh the page on an interval (applies after render).")
+    refresh_rate = st.slider("Interval (sec)", 10, 120, 30, key="sb_interval")
 
     st.divider()
-
-    # ── Scoring weights ───────────────────────────────────────────────────────
     st.subheader("🔧 Scoring Weights")
     use_custom = st.checkbox("Customise weights", key="sb_custom")
-
-    if use_custom and _IMPORTS_OK:
-        w_ml    = st.slider("ML Classifier",    0.0, 1.0, 0.25, 0.05, key="sb_wml")
+    if use_custom:
+        w_rules = st.slider("Rules Engine",     0.0, 1.0, 0.25, 0.05, key="sb_wrules")
         w_anom  = st.slider("Anomaly (IsoFor)", 0.0, 1.0, 0.20, 0.05, key="sb_wanom")
         w_base  = st.slider("Stat. Baseline",   0.0, 1.0, 0.15, 0.05, key="sb_wbase")
         w_ueba  = st.slider("UEBA",             0.0, 1.0, 0.15, 0.05, key="sb_wueba")
         w_corr  = st.slider("Correlation",      0.0, 1.0, 0.15, 0.05, key="sb_wcorr")
         w_intel = st.slider("Threat Intel",     0.0, 1.0, 0.10, 0.05, key="sb_wintel")
-        total   = w_ml + w_anom + w_base + w_ueba + w_corr + w_intel
+        total = w_rules + w_anom + w_base + w_ueba + w_corr + w_intel
         if abs(total - 1.0) > 0.01:
             st.warning(f"Weights sum to {total:.2f} — will auto-normalise")
         CUSTOM_CONFIG = ScoringConfig(
-            weight_ml=w_ml, weight_anomaly=w_anom, weight_baseline=w_base,
-            weight_ueba=w_ueba, weight_correlation=w_corr, weight_threat_intel=w_intel,
+            weight_rules=w_rules, weight_anomaly=w_anom,
+            weight_baseline=w_base, weight_ueba=w_ueba,
+            weight_correlation=w_corr, weight_threat_intel=w_intel,
         ).renormalize()
     else:
-        CUSTOM_CONFIG = ScoringConfig() if _IMPORTS_OK else None
+        CUSTOM_CONFIG = ScoringConfig()
 
     st.divider()
-
-    # ── OSINT quick links ─────────────────────────────────────────────────────
     st.subheader("🔗 OSINT Links")
     st.markdown("- [MITRE ATT&CK](https://attack.mitre.org)")
     st.markdown("- [AbuseIPDB](https://www.abuseipdb.com)")
     st.markdown("- [VirusTotal](https://www.virustotal.com)")
-    st.markdown("- [Shodan](https://www.shodan.io)")
     st.markdown("- [Greynoise](https://greynoise.io)")
     st.divider()
-    st.caption("Hybrid ML · IsoFor · UEBA · MITRE ATT&CK")
+    st.caption("Analyst-feedback model: " +
+               ("🟢 trained" if feedback_model.available() else "⚪ cold start"))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# IMPORT ERROR GATE — show a clear message instead of a raw traceback
+# HEADER — KPIs from the REAL triage DB (never hardcoded)
 # ══════════════════════════════════════════════════════════════════════════════
 
-if not _IMPORTS_OK:
-    st.title("🛡️ SOC AI Threat Intelligence Platform")
-    st.error(f"**Startup Error — module import failed:**\n\n```\n{_IMPORT_ERROR}\n```")
-    st.info("""
-**Common causes on Streamlit Cloud:**
-1. `model/*.pkl` missing → the app will auto-train on first run — click **Reboot app**
-2. `data/sample_logs.csv` missing → ensure it exists in your repo
-3. A src/ file has a syntax error → check the Streamlit logs
+st.title("🛡️ SOC AI Triage Console")
+st.caption("Real-time alert triage · honest ML · persistent analyst workflow")
 
-**Quick fix:** Streamlit dashboard → lower-right corner → **Manage app → Reboot app**
-    """)
-    st.stop()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HEADER + KPI ROW
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.title("🛡️ SOC AI Threat Intelligence Platform")
-st.caption(
-    "Hybrid ML · Isolation Forest · UEBA · "
-    "Time-based Correlation · Kill Chain Analysis"
-)
+store = TriageStore()
+stats = store.stats()
+by_status = stats["by_status"]
 
 st.markdown("---")
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("🚨 Alerts Today",    "147", "+12")
-k2.metric("🔴 Critical",        "9",   "+3")
-k3.metric("🟠 High",            "23",  "+5")
-k4.metric("🧠 UEBA Anomalies",  "14",  "+2")
-k5.metric("⚠️ Suspicious IPs", "31",  "+8")
-k6.metric("✅ System",          "Active")
+k1.metric("📥 Alerts in Queue", stats["total"])
+k2.metric("🔴 Open Critical", stats["open_critical"])
+k3.metric("🔍 Investigating", by_status.get("investigating", 0))
+k4.metric("✅ Confirmed Threats", by_status.get("closed_true_positive", 0))
+k5.metric("❌ False Positives", by_status.get("closed_false_positive", 0))
+fb = feedback_model.model_info()
+k6.metric("🧠 Feedback Model",
+          "Trained" if fb.get("available") else "Cold start")
 st.markdown("---")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TABS
-# ══════════════════════════════════════════════════════════════════════════════
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🔧 Manual Simulation",
+tab_live, tab_sim, tab_evtx, tab_intel, tab_queue = st.tabs([
+    "🔴 Live Monitor",
+    "🔧 Scenario Simulator",
     "📂 Log Investigation",
     "📊 Threat Intel",
-    "📋 Response Centre",
+    "📋 Triage Queue",
 ])
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 1 — MANUAL SIMULATION
+# TAB 1 — LIVE MONITOR
 # ════════════════════════════════════════════════════════════════════════════
-with tab1:
-    st.subheader("Manual Alert Simulation")
-    st.caption("Run any event through the full hybrid detection pipeline.")
+with tab_live:
+    st.subheader("Live Event Feed")
+    st.caption("Stream events through the full detection pipeline as they arrive.")
+
+    if "feed" not in st.session_state:
+        st.session_state.feed = None
+    if "feed_stats" not in st.session_state:
+        st.session_state.feed_stats = {"events": 0, "alerts": 0}
+
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        feed_kind = st.selectbox("Feed source", ["Demo simulator", "Watch folder"],
+                                 key="live_kind")
+    with c2:
+        if feed_kind == "Demo simulator":
+            scenario = st.selectbox("Scenario", list(SCENARIOS.keys()),
+                                    key="live_scenario")
+            st.caption("⚠️ SIMULATED FEED — synthetic demo traffic, not real logs.")
+        else:
+            watch_path = st.text_input("Folder to watch", "watch/",
+                                       key="live_watch")
+            st.caption("Drop .evtx / .csv files in the folder; new data is picked up.")
+    with c3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.session_state.feed is None:
+            start = st.button("▶ Start feed", type="primary",
+                              use_container_width=True, key="live_start")
+            if start:
+                if feed_kind == "Demo simulator":
+                    st.session_state.feed = ("sim", AttackSimulator(scenario))
+                else:
+                    st.session_state.feed = ("watch", WatchFolder(
+                        st.session_state.get("live_watch", "watch/")))
+                st.rerun()
+        else:
+            if st.button("⏹ Stop feed", use_container_width=True,
+                         key="live_stop"):
+                st.session_state.feed = None
+                st.rerun()
+
+    if st.session_state.feed is not None:
+        kind, feed_obj = st.session_state.feed
+        try:
+            new_events = feed_obj.poll()
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Feed error: {e}")
+            new_events = []
+
+        if new_events:
+            with st.spinner(f"Scoring {len(new_events)} new event(s)…"):
+                pr: PipelineResult = run_from_logs(new_events, CUSTOM_CONFIG)
+            st.session_state.feed_stats["events"] += len(new_events)
+            st.session_state.feed_stats["alerts"] += len(pr.triage_alert_ids)
+            if pr.triage_alert_ids:
+                st.warning(f"🚨 {len(pr.triage_alert_ids)} alert(s) added to the "
+                           f"triage queue — see the Triage Queue tab.")
+            if kind == "sim" and feed_obj.finished:
+                st.info("Scenario finished. Restart the feed to replay it.")
+
+        fs = st.session_state.feed_stats
+        m1, m2 = st.columns(2)
+        m1.metric("Events processed (this session)", fs["events"])
+        m2.metric("Alerts queued (this session)", fs["alerts"])
+
+        # Latest queue state
+        recent = store.list_alerts(limit=10)
+        if recent:
+            st.markdown("### Latest alerts")
+            for a in recent:
+                icon = {"Critical": "🔴", "High": "🟠",
+                        "Medium": "🟡"}.get(a["severity"], "🟢")
+                st.markdown(
+                    f"{icon} **#{a['id']}** {a['alert_type'][:60]} — "
+                    f"risk {a['risk_score']} · {a['source_ip']} · "
+                    f"`{a['status']}` · ×{a['event_count']}")
+    else:
+        st.info("Start a feed to begin live triage. The demo simulator plays a "
+                "scripted attack; the watch folder ingests your own log files.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 2 — SCENARIO SIMULATOR (honest: raw event in, pipeline scores it)
+# ════════════════════════════════════════════════════════════════════════════
+with tab_sim:
+    st.subheader("Scenario Simulator")
+    st.caption("Describe a RAW event — the pipeline derives the category and "
+               "scores it. You never hand it the answer.")
+
+    EVENT_CHOICES = {
+        "4625 — Failed logon": "4625",
+        "4624 — Successful logon": "4624",
+        "4648 — Explicit-credential logon": "4648",
+        "4672 — Special privileges assigned": "4672",
+        "4688 — Process created": "4688",
+        "4698 — Scheduled task created": "4698",
+        "4732 — Added to privileged group": "4732",
+        "Sysmon 1 — Process created": "1",
+        "Sysmon 3 — Network connection": "3",
+        "Sysmon 10 — Process access": "10",
+    }
 
     col1, col2, col3 = st.columns(3)
-
     with col1:
-        st.markdown("**Connection Details**")
-        failed_logins = st.slider(
-            "Failed Login Attempts", 0, 50, 5, key="t1_fails"
-        )
-        ip = st.text_input("Source IP Address", "8.8.8.8", key="t1_ip")
-
+        st.markdown("**Event**")
+        eid_label = st.selectbox("Windows/Sysmon Event ID", list(EVENT_CHOICES),
+                                 key="sim_eid")
+        event_id = EVENT_CHOICES[eid_label]
+        failed_logins = st.slider("Failed login count", 0, 50, 5, key="sim_fails")
+        proc_risk = st.checkbox("Malicious process / suspicious command line",
+                                key="sim_proc")
     with col2:
         st.markdown("**Origin**")
-        location = st.selectbox("Country", [
-            "India", "US", "UK", "Germany", "Brazil",
-            "Russia", "China", "North Korea"
-        ], key="t1_loc")
-        device = st.selectbox("Operating System", [
-            "Windows", "Linux", "MacOS", "Android", "iOS"
-        ], key="t1_dev")
-
+        ip = st.text_input("Source IP", "45.33.32.1", key="sim_ip")
+        hour = st.slider("Hour of day (UTC)", 0, 23, 3, key="sim_hour")
+        location = st.selectbox("Country", ["Unknown", "India", "US", "UK",
+                                            "Germany", "Russia", "China",
+                                            "North Korea", "Brazil"],
+                                key="sim_loc")
     with col3:
-        st.markdown("**Attack Context**")
-        alert_type = st.selectbox("Alert / Attack Type", [
-            "Normal Login", "Brute Force", "Credential Stuffing",
-            "Password Spray", "Suspicious Login", "Suspicious Activity",
-            "Malware Execution", "Privilege Escalation", "Credential Dumping",
-        ], key="t1_atype")
-        st.selectbox("Time of Day", [
-            "Business Hours (9–17)", "Evening (17–22)",
-            "Night (22–6)",          "Early Morning (6–9)"
-        ], key="t1_tod")
+        st.markdown("**Context**")
+        device = st.selectbox("OS", ["Unknown", "Windows", "Linux", "MacOS"],
+                              key="sim_dev")
+        st.markdown("")
+        st.caption(f"Parser category for {event_id}: "
+                   f"**{EVENT_ID_MAP.get(event_id, '?')}**")
 
-    if st.button(
-        "🚨 Run Full Pipeline Analysis", type="primary",
-        use_container_width=True, key="t1_run"
-    ):
+    if st.button("🔍 Score this event", type="primary",
+                 use_container_width=True, key="sim_run"):
+        ts = datetime.now(timezone.utc).replace(hour=hour, minute=0,
+                                                second=0, microsecond=0)
         log_entry = {
-            "alert_type":    alert_type,
-            "source_ip":     ip,
+            "event_id":      event_id,
+            "timestamp":     ts.isoformat(),
+            "alert_type":    EVENT_ID_MAP.get(event_id, "Suspicious Activity"),
             "failed_logins": failed_logins,
+            "source_ip":     ip or None,
             "location":      location,
             "device":        device,
-            "event_id":      "SIM",
+            "process_risk":  1 if proc_risk else 0,
         }
-
-        with st.spinner("Running hybrid detection pipeline..."):
-            pr: PipelineResult = run_from_logs([log_entry], CUSTOM_CONFIG)
-
-        st.markdown("---")
-
-        # Top metrics
-        r1, r2, r3, r4, r5 = st.columns(5)
-        r1.metric("Final Risk",   f"{pr.final_score}/100")
-        r2.metric("Severity",     pr.severity)
-        r3.metric("ML Score",
-                  f"{pr.detection_results[0].ml_score:.0f}/100"
-                  if pr.detection_results else "—")
-        r4.metric("Anomaly Score",
-                  f"{pr.detection_results[0].anomaly_score:.0f}/100"
-                  if pr.detection_results else "—")
-        r5.metric("UEBA Score",
-                  f"{pr.ueba_results[0].anomaly_score:.0f}/100"
-                  if pr.ueba_results else "—")
+        with st.spinner("Running detection pipeline…"):
+            pr: PipelineResult = run_from_logs([log_entry], CUSTOM_CONFIG,
+                                               ingest=False)
+        det = pr.detection_results[0]
 
         st.markdown("---")
-        left, right = st.columns(2)
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Final Risk", f"{det.final_risk_score}/100")
+        r2.metric("Severity", det.severity)
+        r3.metric("Rules", f"{det.rules_score:.0f}/100")
+        r4.metric("Anomaly (ML)", f"{det.anomaly_score:.0f}/100 — {det.anomaly_label}")
 
-        with left:
-            if pr.final_score >= 60:
-                st.error(f"**🚨 {pr.investigation.attack_classification}**")
-            elif pr.final_score >= 35:
-                st.warning(f"**⚠️ {pr.investigation.attack_classification}**")
-            else:
-                st.success(f"**✅ {pr.investigation.attack_classification}**")
+        st.markdown("### Why this score")
+        for rsn in det.rules_reasons:
+            st.markdown(f"• {rsn}")
+        for rsn in det.baseline_reasons:
+            st.markdown(f"• {rsn}")
+        if det.anomaly_score >= 60:
+            st.markdown("• Unsupervised anomaly model: stranger than ~95% of "
+                        "benign baseline activity.")
+        st.caption("Anomaly model: Isolation Forest trained on benign baselines "
+                   "only — no labels. Rules: transparent heuristics on "
+                   "observable signals.")
 
-            st.markdown(f"**Attack Summary:** {pr.investigation.attack_summary}")
-
-            ip_status, ip_score = pr.ip_intel.get(ip, ("🟢 Clean", 0))
-            st.info(f"🌐 **IP Intel:** {ip_status}")
-
-            if pr.ueba_results:
-                u = pr.ueba_results[0]
-                summ = u.behavior_summary
-                st.warning(
-                    f"🧠 **UEBA:** {u.anomaly_label} — "
-                    f"{summ[:120]}{'...' if len(summ) > 120 else ''}"
-                )
-                if u.anomalies_found:
-                    with st.expander("UEBA Anomaly Details"):
-                        for a in u.anomalies_found:
-                            st.markdown(f"  • {a}")
-
-        with right:
-            st.markdown("**📊 Score Breakdown**")
-            if pr.scoring.layers:
-                fig, ax = plt.subplots(figsize=(5, 3))
-                names    = [l.name for l in pr.scoring.layers]
-                contribs = [l.contribution for l in pr.scoring.layers]
-                colors   = ["#58a6ff", "#56d364", "#e3b341",
-                            "#d29922", "#f85149", "#bc8cff"]
-                ax.barh(names, contribs, color=colors[:len(names)])
-                ax.set_xlabel("Weighted Contribution", color="white")
-                ax.set_title("Score Layer Contributions", color="white", fontsize=10)
-                ax.set_facecolor("#0d1117")
-                fig.patch.set_facecolor("#0d1117")
-                ax.tick_params(colors="white", labelsize=8)
-                ax.spines["top"].set_visible(False)
-                ax.spines["right"].set_visible(False)
-                ax.spines["bottom"].set_color("#30363d")
-                ax.spines["left"].set_color("#30363d")
-                st.pyplot(fig)
-                plt.close()
-            st.caption(pr.scoring.breakdown)
-
-        # Analyst reasoning
-        st.markdown("---")
-        st.markdown("### 🧠 Analyst Reasoning")
-        for i, step in enumerate(pr.investigation.reasoning_steps, 1):
-            st.markdown(f"**{i}.** {step}")
-
-        # MITRE
         if pr.mitre_techniques:
-            st.markdown("**🎯 MITRE ATT&CK Techniques:**")
+            st.markdown("**🎯 MITRE ATT&CK:**")
             cols = st.columns(min(len(pr.mitre_techniques), 3))
-            for i, m in enumerate(pr.mitre_techniques):
-                cols[i % 3].code(m, language=None)
-
-        # Response actions
-        st.markdown("---")
-        st.markdown("### 🛡️ Recommended Actions")
-        for action in pr.investigation.recommended_actions:
-            st.markdown(f"- {action}")
-
-        # IOCs
-        if pr.investigation.iocs:
-            st.markdown("---")
-            st.markdown("### 🔍 Indicators of Compromise")
-            ioc_cols = st.columns(3)
-            for i, ioc in enumerate(pr.investigation.iocs):
-                ioc_type  = ioc.type  if hasattr(ioc, "type")  else ioc.get("type",  "?")
-                ioc_value = ioc.value if hasattr(ioc, "value") else ioc.get("value", "?")
-                ioc_note  = ioc.note  if hasattr(ioc, "note")  else ioc.get("note",  "")
-                icon = ("🔴" if ioc_type == "ip" else
-                        "🎯" if ioc_type == "technique" else "🟡")
-                ioc_cols[i % 3].markdown(
-                    f"{icon} **[{ioc_type.upper()}]** `{ioc_value}`\n\n_{ioc_note}_"
-                )
+            for i, m_ in enumerate(pr.mitre_techniques):
+                cols[i % 3].code(m_, language=None)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 2 — LOG INVESTIGATION
+# TAB 3 — LOG INVESTIGATION (EVTX upload)
 # ════════════════════════════════════════════════════════════════════════════
-with tab2:
+with tab_evtx:
     st.subheader("EVTX Log Investigation")
-    st.caption(
-        "Upload Windows Event Log files for full SOC investigation. "
-        "Sysmon logs, Security logs, and System logs all supported."
-    )
+    st.caption("Upload a Windows Event Log (.evtx) for full pipeline analysis. "
+               "Sysmon, Security, and System logs supported.")
 
-    uploaded_file = st.file_uploader(
-        "Upload EVTX File", type=["evtx"],
-        help="Max 200MB. Export via Event Viewer or: wevtutil epl Security C:\\out.evtx",
-        key="t2_upload"
-    )
+    uploaded_file = st.file_uploader("Upload EVTX File", type=["evtx"],
+                                     key="t2_upload")
 
     if not uploaded_file:
         st.info("📂 Upload an EVTX file to begin investigation.")
         st.markdown("""
 **Export logs on Windows:**
 ```powershell
-# Security log
 wevtutil epl Security C:\\Users\\YourName\\security.evtx
-
-# Sysmon log
 wevtutil epl Microsoft-Windows-Sysmon/Operational C:\\Users\\YourName\\sysmon.evtx
 ```
-**Supported event IDs:** 4624, 4625, 4648, 4672, 4688, 4698, 4732, 1, 3, 7, 10, 11
-
-**No EVTX?** If the library cannot parse the file, the system automatically falls back
-to a realistic simulated attack scenario so the dashboard is always demonstrable.
+**Mapped event IDs:** 4624, 4625, 4648, 4672, 4688, 4698, 4732,
+Sysmon 1, 3, 7, 10, 11.
         """)
-
     else:
-        # Write to /tmp — guaranteed writable on Streamlit Cloud
         tmp_path = "/tmp/_soc_upload.evtx"
         with open(tmp_path, "wb") as f:
             f.write(uploaded_file.read())
 
-        with st.spinner("🔍 Running full SOC pipeline..."):
-            pr: PipelineResult = run_from_evtx(tmp_path, CUSTOM_CONFIG)
+        try:
+            with st.spinner("🔍 Running full SOC pipeline…"):
+                pr: PipelineResult = run_from_evtx(tmp_path, CUSTOM_CONFIG)
+        except RuntimeError as e:
+            st.error(f"Could not parse the file: {e}")
+            st.stop()
 
-        # Header stats
+        if pr.raw_log_count == 0:
+            st.warning("⚠️ **0 events parsed.** The file may be empty, corrupt, "
+                       "or contain no supported event IDs. No fake data was "
+                       "substituted — try a different file.")
+            st.stop()
+
         h1, h2, h3, h4, h5 = st.columns(5)
         h1.metric("Events Parsed", pr.raw_log_count)
-        h2.metric("Final Risk",     f"{pr.final_score}/100")
-        h3.metric("Severity",       pr.severity)
-        h4.metric("Unique IPs",     len(pr.unique_ips))
-        h5.metric("Pipeline Time",  f"{pr.pipeline_duration_ms}ms")
+        h2.metric("Final Risk", f"{pr.final_score}/100")
+        h3.metric("Severity", pr.severity)
+        h4.metric("Unique IPs", len(pr.unique_ips))
+        h5.metric("Pipeline Time", f"{pr.pipeline_duration_ms}ms")
 
-        threat_label = "🔴 THREAT DETECTED" if pr.is_threat else "🟢 NO SIGNIFICANT THREAT"
+        if pr.triage_alert_ids:
+            st.info(f"📥 {len(pr.triage_alert_ids)} alert(s) added to the triage queue.")
+
+        threat_label = ("🔴 THREAT DETECTED" if pr.is_threat
+                        else "🟢 NO SIGNIFICANT THREAT")
         if pr.is_threat:
             st.error(f"**{threat_label}** — {pr.investigation.attack_classification}")
         else:
             st.success(f"**{threat_label}**")
-
         st.markdown("---")
 
-        # ── Investigation Report ──────────────────────────────────────────────
+        # Investigation report
         st.markdown("## 📋 Investigation Report")
         inv = pr.investigation
-
         with st.expander("📄 Full Investigation Report", expanded=True):
             st.markdown(f"**Case ID:** `{inv.case_id}`")
             st.markdown(f"**Classification:** {inv.attack_classification}")
             st.markdown(f"**Confidence:** {inv.confidence}%")
             st.markdown(f"**Summary:** {inv.attack_summary}")
             st.divider()
-            st.markdown("**Timeline Narrative:**")
-            st.markdown(f"> {inv.timeline_narrative}")
-            st.divider()
             st.markdown("**Analyst Reasoning:**")
             for i, step in enumerate(inv.reasoning_steps, 1):
                 st.markdown(f"{i}. {step}")
 
         st.markdown("---")
-
-        # ── Three-column: Correlation + Kill Chain + UEBA ─────────────────────
         c1, c2, c3 = st.columns(3)
-
         with c1:
             st.markdown("### 🧠 Correlation")
             corr = pr.correlation
-            st.caption(
-                f"{corr.total_events} events · "
-                f"{corr.unique_ips} IPs · "
-                f"Confidence: {corr.attack_confidence}%"
-            )
+            st.caption(f"{corr.total_events} events · {corr.unique_ips} IPs · "
+                       f"Confidence: {corr.attack_confidence}%")
             for alert in corr.alerts:
                 sev = alert.severity
-                fn  = (st.error   if sev == "Critical" else
-                       st.warning if sev in ("High", "Medium") else
-                       st.info)
-                desc = alert.description
-                fn(
-                    f"**{alert.name}** *({sev})*\n\n"
-                    f"{desc[:120]}{'...' if len(desc) > 120 else ''}"
-                )
-            if corr.windows_analyzed:
-                w = corr.windows_analyzed
-                st.caption(
-                    f"Burst: {w.get('burst', 0)} · "
-                    f"Slow: {w.get('slow', 0)} · "
-                    f"Chain: {w.get('chain', 0)}"
-                )
-
+                fn = (st.error if sev == "Critical" else
+                      st.warning if sev in ("High", "Medium") else st.info)
+                fn(f"**{alert.name}** *({sev}, conf {alert.confidence}%)*\n\n"
+                   f"{alert.description[:140]}")
         with c2:
-            st.markdown("### 🧬 Kill Chain")
+            st.markdown("### 🧬 Attack Progression")
             tl_meta = pr.timeline.meta
             if tl_meta.attack_progression:
-                st.progress(
-                    min(tl_meta.completeness_pct / 100, 1.0),
-                    text=f"Coverage: {tl_meta.completeness_pct}% of 6-stage chain"
-                )
+                st.progress(min(tl_meta.completeness_pct / 100, 1.0),
+                            text=f"Coverage: {tl_meta.completeness_pct}% of chain")
                 for stage in tl_meta.attack_progression:
-                    icon = "🔴" if stage in (
-                        "Privilege Escalation", "Credential Access",
-                        "Lateral Movement", "Exfiltration"
-                    ) else "🟠"
-                    st.markdown(f"{icon} **{stage}**")
+                    st.markdown(f"🔴 **{stage}**")
             else:
-                st.info("No kill chain stages detected.")
+                st.info("No attack progression detected.")
             if tl_meta.pivot_count > 0:
                 st.warning(f"⚡ {tl_meta.pivot_count} escalation pivot(s) detected")
-
         with c3:
             st.markdown("### 🧠 UEBA Insights")
             if pr.ueba_results:
-                for u in sorted(
-                    pr.ueba_results, key=lambda x: x.anomaly_score, reverse=True
-                )[:3]:
+                for u in sorted(pr.ueba_results,
+                                key=lambda x: x.anomaly_score, reverse=True)[:3]:
                     score = u.anomaly_score
-                    icon  = "🔴" if score >= 70 else "🟡" if score >= 40 else "🟢"
+                    icon = "🔴" if score >= 70 else "🟡" if score >= 40 else "🟢"
                     st.markdown(f"{icon} **{u.ip}** — Score: {score:.0f}/100")
-                    if u.spike_detected:
-                        st.caption("⚡ Activity spike detected")
-                    if u.new_location:
-                        st.caption("🌍 New location observed")
-                    if u.off_hours_access:
-                        st.caption("🌙 Off-hours access")
-                    if u.anomalies_found:
-                        first = u.anomalies_found[0]
-                        st.caption(
-                            f"📋 {first[:80]}{'...' if len(first) > 80 else ''}"
-                        )
+                    for a in (u.anomalies_found or [])[:2]:
+                        st.caption(f"📋 {a[:80]}")
             else:
                 st.info("No UEBA data available.")
 
         st.markdown("---")
-
-        # ── Attack Timeline ───────────────────────────────────────────────────
         st.markdown("### 📈 Attack Progression Timeline")
-
         if pr.timeline.entries:
-            tl = pr.timeline
-            st.info(f"**{get_progression_summary(tl)}**")
-
-            severity_num = {
-                "Normal Login": 1, "Suspicious Login": 2,
-                "Suspicious Activity": 3, "Password Spray": 4,
-                "Credential Stuffing": 5, "Brute Force": 6,
-                "Malware Execution": 7, "Privilege Escalation": 8,
-                "Credential Dumping": 9,
-            }
-            color_map = {
-                1: "#2ea043", 2: "#56d364", 3: "#e3b341", 4: "#d29922",
-                5: "#f0883e", 6: "#f85149", 7: "#da3633", 8: "#b91c1c",
-                9: "#7f1d1d",
-            }
-
-            y      = [severity_num.get(e.alert_type, 1) for e in tl.entries]
-            x      = list(range(len(y)))
-            colors = [color_map.get(v, "#2ea043") for v in y]
-
+            st.info(f"**{get_progression_summary(pr.timeline)}**")
             fig, ax = plt.subplots(figsize=(12, 4))
-            ax.plot(x, y, color="#58a6ff", linewidth=1.2, alpha=0.35)
-            ax.scatter(x, y, c=colors, s=70, zorder=5)
-
-            for p in get_pivot_events(tl):
-                pi = p.index
-                if pi < len(y):
-                    ax.annotate(
-                        "⬆ PIVOT",
-                        xy=(pi, y[pi]), xytext=(pi, y[pi] + 0.6),
-                        fontsize=7, color="#f85149", ha="center",
-                        arrowprops=dict(arrowstyle="-", color="#f85149", lw=0.8),
-                    )
-
-            ax.set_yticks([1, 2, 3, 4, 5, 6, 7, 8, 9])
-            ax.set_yticklabels([
-                "Normal", "Susp.Login", "Susp.Act", "Pwd Spray",
-                "Cred.Stuff", "Brute Force", "Malware", "PrivEsc", "Cred.Dump"
-            ], fontsize=7)
+            sev_map = {"Benign": 0, "Initial Access": 1, "Execution": 2,
+                       "Privilege Escalation": 3, "Credential Access": 4}
+            y = [sev_map.get(e.stage, 0) for e in pr.timeline.entries
+                 if e.timestamp_rel != "time unknown"]
+            x = list(range(len(y)))
+            ax.plot(x, y, color="#58a6ff", linewidth=1.2, alpha=0.4)
+            ax.scatter(x, y, c=["#2ea043" if v == 0 else "#f85149" for v in y],
+                       s=60, zorder=5)
+            ax.set_yticks([0, 1, 2, 3, 4])
+            ax.set_yticklabels(["Benign", "Init.Access", "Execution",
+                                "PrivEsc", "Cred.Access"], fontsize=8)
             ax.set_xlabel("Event Sequence", color="white")
-            ax.set_ylabel("Threat Level",   color="white")
-            ax.set_title("Attack Progression (pivots annotated)", color="white")
             ax.set_facecolor("#0d1117")
             fig.patch.set_facecolor("#0d1117")
             ax.tick_params(colors="white")
-            ax.spines["bottom"].set_color("#30363d")
-            ax.spines["left"].set_color("#30363d")
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            ax.legend(
-                handles=[
-                    mpatches.Patch(color="#2ea043", label="Normal"),
-                    mpatches.Patch(color="#e3b341", label="Suspicious"),
-                    mpatches.Patch(color="#f0883e", label="High Risk"),
-                    mpatches.Patch(color="#da3633", label="Malware/PrivEsc"),
-                    mpatches.Patch(color="#7f1d1d", label="Critical"),
-                ],
-                loc="upper left", facecolor="#161b22",
-                edgecolor="#30363d", labelcolor="white", fontsize=8
-            )
+            for s_ in ("top", "right"):
+                ax.spines[s_].set_visible(False)
             st.pyplot(fig)
             plt.close()
         else:
             st.info("No timeline entries to display.")
 
         st.markdown("---")
-
-        # ── Event Table ───────────────────────────────────────────────────────
         st.markdown("### 📊 Event Analysis")
-
-        n_events = max(pr.raw_log_count, 1)
-
-        fc1, fc2, fc3 = st.columns(3)
-        with fc1:
-            threats_only = st.checkbox("Threat events only", key="t2_thronly")
-        with fc2:
-            min_risk = st.slider("Min risk score", 0, 100, 0, key="t2_minrisk")
-        with fc3:
-            show_max = max(5, min(50, n_events))
-            show_def = min(10, show_max)
-            show_n   = (
-                st.slider("Show N events", 5, show_max, show_def, key="t2_shown")
-                if show_max > 5 else 5
-            )
-
-        for entry in pr.timeline.entries[:show_n]:
-            det = None
-            if len(pr.detection_results) > entry.index:
-                det = pr.detection_results[entry.index]
-
+        for entry in pr.timeline.entries[:15]:
+            det = (pr.detection_results[entry.index]
+                   if entry.index < len(pr.detection_results) else None)
             det_score = det.final_risk_score if det else 0
-            is_threat = det_score >= 35 if det else False
-
-            if threats_only and not is_threat:
-                continue
-            if det_score < min_risk:
-                continue
-
-            icon   = "🚨" if is_threat else "✅"
-            pivot  = " ⬆ PIVOT" if entry.is_pivot else ""
-            header = (
-                f"{icon} {entry.timestamp_rel} | {entry.alert_type} | "
-                f"{entry.stage} | Risk: {det_score}/100{pivot}"
-            )
-
-            with st.expander(header, expanded=(is_threat and entry.index < 3)):
+            icon = "🚨" if det_score >= 35 else "✅"
+            pivot = " ⬆ PIVOT" if entry.is_pivot else ""
+            header = (f"{icon} {entry.timestamp_rel} | {entry.alert_type} | "
+                      f"{entry.stage} | Risk: {det_score}/100{pivot}")
+            with st.expander(header, expanded=(det_score >= 60 and entry.index < 2)):
                 a1, a2, a3, a4 = st.columns(4)
                 a1.markdown(f"**Event ID:** `{entry.event_id}`")
                 a2.markdown(f"**Source IP:** `{entry.source_ip}`")
-                a3.markdown(f"**MITRE:** `{entry.technique_id}`")
+                a3.markdown(f"**MITRE:** `{entry.technique_id or '—'}`")
                 a4.markdown(f"**Dwell:** {entry.dwell_label}")
-
-                b1, b2 = st.columns(2)
-                b1.markdown(f"**Stage:** {entry.stage}")
-                b2.markdown(f"**Technique:** {entry.technique_name}")
-
                 if det:
-                    st.caption(
-                        f"ML: {det.ml_score:.0f}/100 | "
-                        f"Anomaly: {det.anomaly_score:.0f}/100 | "
-                        f"Baseline: {det.baseline_score:.0f}/100 | "
-                        f"{det.anomaly_label}"
-                    )
-                    for r in det.baseline_reasons:
-                        st.markdown(f"  — {r}")
+                    st.caption(f"Rules: {det.rules_score:.0f}/100 | "
+                               f"Anomaly: {det.anomaly_score:.0f}/100 | "
+                               f"Baseline: {det.baseline_score:.0f}/100")
+                    for r_ in det.rules_reasons:
+                        st.markdown(f"  — {r_}")
 
-                if is_threat:
-                    if det_score >= 80:
-                        st.error("🔴 Block IP · Isolate endpoint · Escalate immediately")
-                    elif det_score >= 60:
-                        st.warning("🟠 Watchlist · Review auth logs · Alert team")
-                    else:
-                        st.info("🟡 Monitor · Check baseline · Log for audit")
-
-        # ── IOC Panel ─────────────────────────────────────────────────────────
         if inv.iocs:
             st.markdown("---")
             st.markdown("### 🔍 Indicators of Compromise")
             ioc_cols = st.columns(3)
             for i, ioc in enumerate(inv.iocs):
-                ioc_type  = ioc.type  if hasattr(ioc, "type")  else ioc.get("type",  "?")
+                ioc_type = ioc.type if hasattr(ioc, "type") else ioc.get("type", "?")
                 ioc_value = ioc.value if hasattr(ioc, "value") else ioc.get("value", "?")
-                ioc_note  = ioc.note  if hasattr(ioc, "note")  else ioc.get("note",  "")
+                ioc_note = ioc.note if hasattr(ioc, "note") else ioc.get("note", "")
                 icon = ("🔴" if ioc_type == "ip" else
                         "🎯" if ioc_type == "technique" else "🟡")
                 ioc_cols[i % 3].markdown(
-                    f"{icon} **[{ioc_type.upper()}]** `{ioc_value}`\n\n_{ioc_note}_"
-                )
+                    f"{icon} **[{ioc_type.upper()}]** `{ioc_value}`\n\n_{ioc_note}_")
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 3 — THREAT INTEL
+# TAB 4 — THREAT INTEL
 # ════════════════════════════════════════════════════════════════════════════
-with tab3:
+with tab_intel:
     st.subheader("IP Threat Intelligence")
-    st.caption("Real-time AbuseIPDB lookup + local threat list.")
+    st.caption("AbuseIPDB lookup (needs an API key in secrets/env) · "
+               "private IPs are never queried.")
 
     lc, rc = st.columns([2, 1])
     with lc:
-        lookup_ip = st.text_input(
-            "IP to investigate", placeholder="185.220.101.1", key="t3_ip"
-        )
+        lookup_ip = st.text_input("IP to investigate",
+                                  placeholder="185.220.101.1", key="t3_ip")
     with rc:
         st.markdown("<br>", unsafe_allow_html=True)
-        do_lookup = st.button(
-            "🔍 Investigate", type="primary",
-            use_container_width=True, key="t3_btn"
-        )
-
-    st.caption("Quick-test IPs:")
-    q1, q2, q3, q4 = st.columns(4)
-    if q1.button("185.220.101.1 *(Tor)*",   use_container_width=True, key="t3_q1"):
-        lookup_ip, do_lookup = "185.220.101.1", True
-    if q2.button("45.33.32.1 *(Known bad)*", use_container_width=True, key="t3_q2"):
-        lookup_ip, do_lookup = "45.33.32.1", True
-    if q3.button("8.8.8.8 *(Google DNS)*",   use_container_width=True, key="t3_q3"):
-        lookup_ip, do_lookup = "8.8.8.8", True
-    if q4.button("1.1.1.1 *(Cloudflare)*",   use_container_width=True, key="t3_q4"):
-        lookup_ip, do_lookup = "1.1.1.1", True
+        do_lookup = st.button("🔍 Investigate", type="primary",
+                              use_container_width=True, key="t3_btn")
 
     if do_lookup and lookup_ip:
-        with st.spinner(f"Querying threat intel for {lookup_ip} ..."):
+        with st.spinner(f"Querying threat intel for {lookup_ip} …"):
             ip_status_str, ip_score = check_ip_reputation(lookup_ip)
-
         st.markdown("---")
         m1, m2, m3 = st.columns(3)
-        m1.metric("IP Address",  lookup_ip)
+        m1.metric("IP Address", lookup_ip)
         m2.metric("Abuse Score", f"{ip_score}/100")
         m3.metric("Verdict",
-                  "🔴 Malicious"  if ip_score >= 75 else
+                  "🔴 Malicious" if ip_score >= 75 else
                   "🟡 Suspicious" if ip_score >= 30 else "🟢 Clean")
-
         st.markdown(f"**Full status:** {ip_status_str}")
-
-        if ip_score >= 75:
-            st.error(f"**🔴 MALICIOUS IP** — Score {ip_score}/100. Block immediately.")
-        elif ip_score >= 30:
-            st.warning(f"**🟡 SUSPICIOUS IP** — Score {ip_score}/100. Monitor closely.")
-        else:
-            st.success(f"**🟢 CLEAN IP** — Score {ip_score}/100.")
-
-        st.markdown("**Recommended Actions:**")
-        if ip_score >= 75:
-            st.markdown("""
-1. 🔴 Block IP at firewall immediately
-2. Search logs for all connections from this IP
-3. Check if any accounts authenticated from this IP
-4. Revoke active sessions
-5. Add to permanent blocklist + file incident
-            """)
-        elif ip_score >= 30:
-            st.markdown("""
-1. 🟡 Add to watchlist
-2. Enable rate limiting
-3. Review recent auth attempts
-4. Temporary block if activity escalates
-            """)
-        else:
-            st.markdown("1. 🟢 No action required — continue standard monitoring")
-
-        st.markdown("---")
         st.markdown("**🌐 Investigate further:**")
-        o1, o2, o3, o4, o5 = st.columns(5)
+        o1, o2, o3, o4 = st.columns(4)
         o1.markdown(f"[AbuseIPDB](https://www.abuseipdb.com/check/{lookup_ip})")
         o2.markdown(f"[VirusTotal](https://www.virustotal.com/gui/ip-address/{lookup_ip})")
         o3.markdown(f"[Shodan](https://www.shodan.io/host/{lookup_ip})")
-        o4.markdown(f"[IPInfo](https://ipinfo.io/{lookup_ip})")
-        o5.markdown(f"[Greynoise](https://viz.greynoise.io/ip/{lookup_ip})")
-
+        o4.markdown(f"[Greynoise](https://viz.greynoise.io/ip/{lookup_ip})")
     else:
         st.markdown("---")
-        st.markdown("### OSINT Reference Table")
+        st.markdown("### OSINT Reference")
         st.table({
-            "Tool":    ["AbuseIPDB",       "VirusTotal",      "Shodan",
-                        "Greynoise",        "IPInfo"],
-            "Purpose": ["IP abuse reports", "Multi-engine scan","Device intel",
-                        "Noise vs targeted","Geolocation/ASN"],
-            "URL":     ["abuseipdb.com",   "virustotal.com",  "shodan.io",
-                        "greynoise.io",    "ipinfo.io"],
+            "Tool":    ["AbuseIPDB", "VirusTotal", "Shodan", "Greynoise"],
+            "Purpose": ["IP abuse reports", "Multi-engine scan",
+                        "Device intel", "Noise vs targeted"],
         })
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 4 — RESPONSE CENTRE
+# TAB 5 — TRIAGE QUEUE (persistent analyst workflow)
 # ════════════════════════════════════════════════════════════════════════════
-with tab4:
-    st.subheader("🛡️ Response Centre")
-    st.caption("Log analyst decisions and track response actions.")
+with tab_queue:
+    st.subheader("📋 Triage Queue")
+    st.caption("Persistent alert queue. Your triage decisions train the "
+               "analyst-feedback model (Random Forest on behavioral features).")
 
-    if "response_log" not in st.session_state:
-        st.session_state.response_log = []
+    if "analyst_name" not in st.session_state:
+        st.session_state.analyst_name = ""
 
-    st.markdown("### Take Action on an Alert")
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        q_status = st.selectbox("Status", ["open", "investigating", "all",
+                                           "closed_true_positive",
+                                           "closed_false_positive",
+                                           "suppressed"], key="q_status")
+    with f2:
+        q_min = st.slider("Min risk", 0, 100, 0, key="q_min")
+    with f3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        analyst = st.text_input("Analyst name", key="analyst_name",
+                                placeholder="e.g. Aman Ali")
 
-    ra1, ra2 = st.columns(2)
-    with ra1:
-        action_ip   = st.text_input("Target IP", placeholder="45.33.32.1", key="t4_ip")
-        action_type = st.selectbox("Action", [
-            "🔴 Block IP at Firewall",
-            "🟡 Add to Watchlist",
-            "🔍 Escalate to Tier 2",
-            "✅ Mark as False Positive",
-            "📋 Open Incident Ticket",
-            "🔒 Force Password Reset",
-            "📁 Preserve Evidence",
-            "🔕 Suppress for 24h",
-        ], key="t4_atype")
-    with ra2:
-        analyst_name = st.text_input(
-            "Analyst Name", placeholder="Aman Ali", key="t4_analyst"
-        )
-        action_notes = st.text_area(
-            "Notes", placeholder="Reason for action...", height=100, key="t4_notes"
-        )
-
-    if st.button("✅ Log Action", type="primary", key="t4_logbtn"):
-        if action_ip and analyst_name:
-            entry = {
-                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "analyst":   analyst_name,
-                "ip":        action_ip,
-                "action":    action_type,
-                "notes":     action_notes,
-            }
-            st.session_state.response_log.append(entry)
-            st.success(f"✅ Action logged: {action_type} for {action_ip}")
-        else:
-            st.warning("Please fill in both IP and Analyst Name.")
-
-    st.markdown("---")
-    st.markdown("### Action Log")
-
-    if st.session_state.response_log:
-        for entry in reversed(st.session_state.response_log):
-            sev_icon = ("🔴" if "Block"    in entry["action"] else
-                        "🔍" if "Escalate" in entry["action"] else
-                        "✅" if "False"    in entry["action"] else "📋")
-            with st.expander(
-                f"{sev_icon} {entry['timestamp']} — {entry['action']} — IP: {entry['ip']}",
-                expanded=False
-            ):
-                st.markdown(f"**Analyst:** {entry['analyst']}")
-                st.markdown(f"**Action:**  {entry['action']}")
-                st.markdown(f"**Target:**  `{entry['ip']}`")
-                if entry["notes"]:
-                    st.markdown(f"**Notes:**   {entry['notes']}")
-
-        if st.button("🗑️ Clear Action Log", key="t4_clear"):
-            st.session_state.response_log = []
-            st.rerun()
+    alerts = store.list_alerts(
+        status=None if q_status == "all" else q_status, min_score=q_min)
+    if not alerts:
+        st.info("Queue is empty. Run the live feed or upload an EVTX to generate alerts.")
     else:
-        st.info("No actions logged yet. Use the form above to log analyst decisions.")
+        for a in alerts:
+            icon = {"Critical": "🔴", "High": "🟠",
+                    "Medium": "🟡"}.get(a["severity"], "🟢")
+            header = (f"{icon} #{a['id']} · {a['alert_type'][:55]} · "
+                      f"risk {a['risk_score']} · {a['source_ip']} · "
+                      f"`{a['status']}` · ×{a['event_count']}")
+            with st.expander(header):
+                c1, c2 = st.columns(2)
+                c1.markdown(f"**First seen:** {a['first_seen'][:19]}")
+                c1.markdown(f"**Last seen:** {a['last_seen'][:19]}")
+                c2.markdown(f"**MITRE:** {', '.join(_json_loads(a['mitre'])[:3]) or '—'}")
+                if a["notes"]:
+                    st.markdown(f"**Notes:** {a['notes']}")
+                if a["analyst"]:
+                    st.caption(f"Last handled by {a['analyst']}")
+
+                b1, b2, b3, b4 = st.columns(4)
+                note = st.text_input("Note (optional)", key=f"note_{a['id']}",
+                                     label_visibility="collapsed",
+                                     placeholder="Note (optional)")
+                acted = False
+                if b1.button("🔍 Investigating", key=f"inv_{a['id']}"):
+                    acted = store.set_status(a["id"], "investigating",
+                                             analyst, note)
+                if b2.button("✅ True Positive", key=f"tp_{a['id']}"):
+                    acted = store.set_status(a["id"], "closed_true_positive",
+                                             analyst, note)
+                if b3.button("❌ False Positive", key=f"fp_{a['id']}"):
+                    acted = store.set_status(a["id"], "closed_false_positive",
+                                             analyst, note)
+                if b4.button("🔕 Suppress", key=f"sup_{a['id']}"):
+                    acted = store.set_status(a["id"], "suppressed",
+                                             analyst, note)
+                if acted:
+                    retrained = feedback_model.maybe_retrain()
+                    if retrained:
+                        st.success("Analyst-feedback model retrained on new labels.")
+                    st.rerun()
 
     st.markdown("---")
-    st.markdown("### 📋 Quick Response Playbooks")
-
-    pb1, pb2, pb3 = st.columns(3)
-
-    with pb1:
-        with st.expander("🔴 Brute Force Playbook"):
-            st.markdown("""
-1. Identify source IP(s) from SIEM
-2. Check AbuseIPDB score
-3. Block IP at firewall / WAF
-4. Review auth logs for past 24 hours
-5. Reset credentials for targeted accounts
-6. Enable MFA if not already active
-7. File P2 incident ticket
-            """)
-
-    with pb2:
-        with st.expander("🔴 Credential Dumping Playbook"):
-            st.markdown("""
-1. Isolate affected endpoint immediately
-2. Assume ALL credentials are compromised
-3. Rotate ALL passwords + service accounts
-4. Revoke certificates / tokens / API keys
-5. Check for lateral movement indicators
-6. File P1 incident + notify management
-7. Engage Incident Response team
-            """)
-
-    with pb3:
-        with st.expander("🟡 Suspicious Login Playbook"):
-            st.markdown("""
-1. Contact account owner directly
-2. Verify if travel / VPN is expected
-3. Check for impossible travel (time + distance)
-4. Review recent account activity
-5. Add IP to 30-day watchlist
-6. Enable step-up authentication
-7. Log for audit trail
-            """)
-
-    # Session summary
-    st.markdown("---")
-    st.markdown("### 📊 Session Summary")
-    total_logged = len(st.session_state.response_log)
-    if total_logged > 0:
-        action_counts: dict = {}
-        for e in st.session_state.response_log:
-            a = e["action"]
-            action_counts[a] = action_counts.get(a, 0) + 1
-        s1, s2 = st.columns(2)
-        s1.metric("Total Actions Logged", total_logged)
-        s2.metric("Unique Action Types",  len(action_counts))
-        st.markdown("**Action breakdown this session:**")
-        for action, count in sorted(action_counts.items(), key=lambda x: -x[1]):
-            st.markdown(f"  - {action}: **{count}**")
+    st.markdown("### 🧠 Analyst-Feedback Model")
+    fb_info = feedback_model.model_info()
+    if fb_info.get("available"):
+        st.success(f"🟢 Trained on {fb_info['labels_at_train']} analyst decisions. "
+                   f"Similar past alerts now adjust prioritization (±8).")
+        if st.button("🔄 Retrain now", key="fb_retrain"):
+            try:
+                info = feedback_model.train()
+                st.success(f"Retrained on {info['labels']} labels "
+                           f"(TP={info['tp']}, FP={info['fp']}).")
+            except ValueError as e:
+                st.warning(str(e))
     else:
-        st.caption("No actions logged this session.")
+        n_labels = len(store.labeled_events())
+        st.info(f"⚪ Cold start — {n_labels}/20 analyst decisions needed. "
+                f"Triage alerts above as true/false positives to train it. "
+                f"Labels are your real decisions; the model learns which "
+                f"behavioral patterns you confirm.")
+
+
+# AUTO-REFRESH — at the END so the page renders first (no blocking sleep up top)
+if auto_refresh:
+    time.sleep(refresh_rate)
+    st.rerun()

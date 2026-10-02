@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Runtime ML artifacts & state (regenerated on first run)
+model/*.pkl
+model/*.meta
+model/triage.db
+model/ueba_profiles.json
+model/baseline.json
