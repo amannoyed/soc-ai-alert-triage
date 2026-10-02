@@ -4,12 +4,12 @@ scoring_engine.py
 Dynamic Risk Scoring Engine
 
 Combines:
-  - ML confidence score        (from detection_engine)
-  - Isolation Forest anomaly   (from detection_engine)
+  - Rules engine score         (from detection_engine — transparent heuristics)
+  - Isolation Forest anomaly   (from detection_engine — unsupervised ML)
   - Statistical baseline       (from detection_engine)
   - UEBA behavioral anomaly    (from ueba_engine)
   - Correlation severity       (from correlation_engine)
-  - Threat intelligence        (AbuseIPDB / local intel)
+  - Threat intelligence        (AbuseIPDB)
 
 All weights are configurable via ScoringConfig.
 """
@@ -29,7 +29,7 @@ class ScoringConfig:
     All weights must sum to 1.0.
     Adjust per environment — e.g. raise threat_intel weight if API key available.
     """
-    weight_ml:             float = 0.25
+    weight_rules:          float = 0.25
     weight_anomaly:        float = 0.20
     weight_baseline:       float = 0.15
     weight_ueba:           float = 0.15
@@ -45,20 +45,22 @@ class ScoringConfig:
     intel_malicious_boost: int   = 15    # added if IP is known malicious
     chain_confidence_boost: int  = 10    # added if attack chain confidence ≥ 85%
     consensus_boost:       int   = 8     # added if 4+ layers agree score ≥ 60
+    feedback_boost:        int   = 8     # added if feedback model P(threat) ≥ 0.7
+    feedback_penalty:      int   = 8     # subtracted if P(threat) ≤ 0.3
 
     def validate(self) -> bool:
-        total = (self.weight_ml + self.weight_anomaly + self.weight_baseline +
+        total = (self.weight_rules + self.weight_anomaly + self.weight_baseline +
                  self.weight_ueba + self.weight_correlation + self.weight_threat_intel)
         return abs(total - 1.0) < 0.01
 
     def renormalize(self) -> "ScoringConfig":
         """Auto-fix weights to sum to 1.0."""
-        total = (self.weight_ml + self.weight_anomaly + self.weight_baseline +
+        total = (self.weight_rules + self.weight_anomaly + self.weight_baseline +
                  self.weight_ueba + self.weight_correlation + self.weight_threat_intel)
         if total == 0:
             return self
         factor = 1.0 / total
-        self.weight_ml           *= factor
+        self.weight_rules           *= factor
         self.weight_anomaly      *= factor
         self.weight_baseline     *= factor
         self.weight_ueba         *= factor
@@ -156,6 +158,7 @@ def compute_score(
     correlation_result,             # CorrelationResult from correlation_engine (or None)
     ip_abuse_score:  int   = 0,     # 0–100 from AbuseIPDB
     config: ScoringConfig = None,
+    feedback_prob: Optional[float] = None,  # P(analyst confirms threat) 0–1
 ) -> ScoringResult:
     """
     Compute the final fused risk score from all detection layers.
@@ -167,6 +170,8 @@ def compute_score(
     correlation_result : CorrelationResult | None
     ip_abuse_score     : int 0–100 (AbuseIPDB confidence score)
     config             : ScoringConfig (uses DEFAULT_CONFIG if None)
+    feedback_prob      : Optional P(threat) from the analyst-feedback model
+                         (None when untrained — no effect)
 
     Returns
     -------
@@ -177,8 +182,8 @@ def compute_score(
         cfg = cfg.renormalize()
 
     # ── Extract raw scores from each layer ────────────────────────────────────
-    ml_raw       = float(getattr(detection_result, "ml_score",       0))
-    anomaly_raw  = float(getattr(detection_result, "anomaly_score",  0))
+    rules_raw    = float(getattr(detection_result, "rules_score",   0))
+    anomaly_raw  = float(getattr(detection_result, "anomaly_score", 0))
     baseline_raw = float(getattr(detection_result, "baseline_score", 0))
     ueba_raw     = float(getattr(ueba_result,       "anomaly_score",  0)) \
                    if ueba_result is not None else 0.0
@@ -187,9 +192,9 @@ def compute_score(
 
     # ── Weighted contributions ────────────────────────────────────────────────
     layers = [
-        LayerScore("ML Classifier",   ml_raw,       cfg.weight_ml,
-                   ml_raw       * cfg.weight_ml,
-                   f"GradientBoosting P(threat)={ml_raw:.1f}%"),
+        LayerScore("Rules Engine",    rules_raw,    cfg.weight_rules,
+                   rules_raw    * cfg.weight_rules,
+                   f"Heuristic rules on observables={rules_raw:.1f}"),
         LayerScore("Anomaly (IsoFor)",anomaly_raw,  cfg.weight_anomaly,
                    anomaly_raw  * cfg.weight_anomaly,
                    f"Isolation Forest deviation={anomaly_raw:.1f}"),
@@ -229,16 +234,16 @@ def compute_score(
             f"{correlation_result.attack_confidence}% ≥ 85%"
         )
 
-    # Rule 3 — ML floor when classifier is confident
-    ml_pred = int(getattr(detection_result, "ml_prediction", 0))
-    if ml_pred == 1 and ml_raw >= 75:
+    # Rule 3 — Rules + anomaly agreement floor: transparent heuristics and the
+    # unsupervised model independently flagging the same event is strong evidence
+    if rules_raw >= 75 and anomaly_raw >= 60:
         if weighted_sum < 50:
             weighted_sum = 50.0
-            overrides.append("+floor=50 — ML confident threat prediction")
+            overrides.append("+floor=50 — rules and anomaly model agree")
 
     # Rule 4 — Multi-layer consensus
     high_count = sum(
-        1 for s in [ml_raw, anomaly_raw, baseline_raw, ueba_raw, corr_raw]
+        1 for s in [rules_raw, anomaly_raw, baseline_raw, ueba_raw, corr_raw]
         if s >= 60
     )
     if high_count >= 4:
@@ -247,7 +252,24 @@ def compute_score(
             f"+{cfg.consensus_boost} — Consensus: {high_count}/5 layers ≥ 60"
         )
 
-    final = int(round(min(weighted_sum, 100.0)))
+    # Rule 5 — Analyst feedback: the supervised model learned from real
+    # analyst triage decisions. Similar past alerts confirmed as threats
+    # boost priority; ones marked false positives reduce it.
+    if feedback_prob is not None:
+        if feedback_prob >= 0.7:
+            weighted_sum += cfg.feedback_boost
+            overrides.append(
+                f"+{cfg.feedback_boost} — Analysts confirmed similar past "
+                f"alerts as threats (feedback P={feedback_prob:.2f})"
+            )
+        elif feedback_prob <= 0.3:
+            weighted_sum -= cfg.feedback_penalty
+            overrides.append(
+                f"-{cfg.feedback_penalty} — Analysts marked similar past "
+                f"alerts as false positives (feedback P={feedback_prob:.2f})"
+            )
+
+    final = int(round(min(max(weighted_sum, 0), 100.0)))
 
     # ── Severity ──────────────────────────────────────────────────────────────
     severity = ("🔴 Critical" if final >= cfg.critical_floor else
@@ -295,6 +317,7 @@ def compute_score_from_batch(
     correlation_result,
     ip_abuse_scores:    dict,          # {ip_str: score}
     config: ScoringConfig = None,
+    feedback_probs:     list | None = None,  # per-event P(threat) from feedback model
 ) -> ScoringResult:
     """
     Aggregate scoring for a batch of events (e.g. full log file analysis).
@@ -318,12 +341,18 @@ def compute_score_from_batch(
 
     max_intel = max(ip_abuse_scores.values(), default=0)
 
+    fb = None
+    if feedback_probs:
+        vals = [p for p in feedback_probs if p is not None]
+        fb = max(vals) if vals else None
+
     return compute_score(
         detection_result   = worst_det,
         ueba_result        = worst_ueba,
         correlation_result = correlation_result,
         ip_abuse_score     = max_intel,
         config             = config,
+        feedback_prob      = fb,
     )
 
 
@@ -331,6 +360,6 @@ if __name__ == "__main__":
     print("Scoring Engine — Config validation")
     cfg = ScoringConfig()
     print(f"  Valid: {cfg.validate()}")
-    print(f"  Weights: ML={cfg.weight_ml} Anom={cfg.weight_anomaly} "
+    print(f"  Weights: ML={cfg.weight_rules} Anom={cfg.weight_anomaly} "
           f"Base={cfg.weight_baseline} UEBA={cfg.weight_ueba} "
           f"Corr={cfg.weight_correlation} Intel={cfg.weight_threat_intel}")

@@ -41,15 +41,22 @@ class BehaviorEvent:
     device:       str
 
     @classmethod
-    def now(cls, failed_logins: int = 0, alert_type: str = "Normal Login",
-            location: str = "Unknown", device: str = "Unknown") -> "BehaviorEvent":
+    def at(cls, timestamp: str | None, failed_logins: int = 0,
+           alert_type: str = "Normal Login", location: str = "Unknown",
+           device: str = "Unknown") -> "BehaviorEvent":
+        """Build an event at an explicit timestamp (real log time)."""
         return cls(
-            timestamp     = datetime.now(timezone.utc).isoformat(),
+            timestamp     = timestamp or datetime.now(timezone.utc).isoformat(),
             failed_logins = failed_logins,
             alert_type    = alert_type,
             location      = location,
             device        = device,
         )
+
+    @classmethod
+    def now(cls, failed_logins: int = 0, alert_type: str = "Normal Login",
+            location: str = "Unknown", device: str = "Unknown") -> "BehaviorEvent":
+        return cls.at(None, failed_logins, alert_type, location, device)
 
 
 @dataclass
@@ -131,17 +138,16 @@ class UEBAEngine:
 
     # ── Profile management ───────────────────────────────────────────────────
 
-    def _get_or_create(self, ip: str) -> IPProfile:
+    def _get_or_create(self, ip: str, event: "BehaviorEvent") -> IPProfile:
         if ip not in self._profiles:
             self._profiles[ip] = IPProfile(
                 ip         = ip,
-                first_seen = datetime.now(timezone.utc).isoformat(),
+                first_seen = event.timestamp,
             )
         return self._profiles[ip]
 
     def _update_profile(self, profile: IPProfile, event: BehaviorEvent) -> None:
-        now_str = datetime.now(timezone.utc).isoformat()
-        profile.last_seen           = now_str
+        profile.last_seen           = event.timestamp
         profile.total_events       += 1
         profile.total_failed_logins += event.failed_logins
 
@@ -248,7 +254,7 @@ class UEBAEngine:
     # ── Main analysis ────────────────────────────────────────────────────────
 
     def analyze(self, ip: str, event: BehaviorEvent) -> UEBAResult:
-        profile  = self._get_or_create(ip)
+        profile  = self._get_or_create(ip, event)
         is_new   = profile.total_events == 0
 
         # Run detectors BEFORE updating profile (so we compare against history)
@@ -315,7 +321,7 @@ class UEBAEngine:
             spike_detected      = spike_hit,
             new_location        = new_loc_hit,
             off_hours_access    = off_hrs_hit,
-            timestamp           = datetime.now(timezone.utc).isoformat(),
+            timestamp           = event.timestamp,
         )
 
     def _build_summary(self, ip: str, profile: IPProfile,
@@ -370,10 +376,13 @@ def analyze_ip(ip: str, event: BehaviorEvent) -> UEBAResult:
 def analyze_from_log(log: dict) -> UEBAResult:
     """
     Build a BehaviorEvent from a parsed log dict and run UEBA analysis.
-    Expected keys: source_ip, failed_logins, alert_type, location, device
+    Uses the log's real timestamp when present; falls back to now.
+    Expected keys: source_ip, failed_logins, alert_type, location, device,
+                   timestamp (ISO-8601, optional)
     """
-    ip = log.get("source_ip", "0.0.0.0")
-    event = BehaviorEvent.now(
+    ip = log.get("source_ip") or "unknown"
+    event = BehaviorEvent.at(
+        log.get("timestamp"),
         failed_logins = log.get("failed_logins", 0),
         alert_type    = log.get("alert_type",   "Normal Login"),
         location      = log.get("location",     "Unknown"),
