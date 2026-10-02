@@ -6,20 +6,23 @@ try:
 except ImportError:
     EVTX_AVAILABLE = False
 
-# Maps Sysmon/Security Event IDs to SOC context
+# Maps Sysmon/Security Event IDs to SOC alert categories.
+# Values are CATEGORY labels only — severity lives in features.EVENT_RISK,
+# and failed_logins below carries REAL per-event counts (a 4625 is one
+# failed logon), never invented weights.
 EVENT_ID_MAP = {
-    "4625": ("Brute Force",          20),   # Failed logon
-    "4624": ("Normal Login",          0),   # Successful logon
-    "4648": ("Suspicious Login",     12),   # Logon with explicit credentials
-    "4672": ("Privilege Escalation", 25),   # Special privileges assigned
-    "4688": ("Suspicious Activity",   8),   # Process created (Security log)
-    "4698": ("Suspicious Activity",  15),   # Scheduled task created
-    "4732": ("Privilege Escalation", 20),   # Member added to security group
-    "1":    ("Suspicious Activity",  10),   # Sysmon: Process Create
-    "3":    ("Suspicious Activity",   8),   # Sysmon: Network Connection
-    "7":    ("Suspicious Activity",  12),   # Sysmon: Image Loaded
-    "10":   ("Credential Dumping",   30),   # Sysmon: Process Access (lsass dump)
-    "11":   ("Suspicious Activity",   8),   # Sysmon: File Created
+    "4625": "Brute Force",          # Failed logon
+    "4624": "Normal Login",         # Successful logon
+    "4648": "Suspicious Login",     # Logon with explicit credentials
+    "4672": "Privilege Escalation", # Special privileges assigned
+    "4688": "Suspicious Activity",  # Process created (Security log)
+    "4698": "Suspicious Activity",  # Scheduled task created
+    "4732": "Privilege Escalation", # Member added to security group
+    "1":    "Suspicious Activity",  # Sysmon: Process Create
+    "3":    "Suspicious Activity",  # Sysmon: Network Connection
+    "7":    "Suspicious Activity",  # Sysmon: Image Loaded
+    "10":   "Credential Dumping",   # Sysmon: Process Access (often lsass)
+    "11":   "Suspicious Activity",  # Sysmon: File Created
 }
 
 MALICIOUS_PROCESSES = [
@@ -36,29 +39,35 @@ SUSPICIOUS_CMDLINE = [
 
 def _extract_fields(root):
     event_id = None
+    timestamp = None   # ISO-8601 SystemTime from the event XML; None if absent
     data_fields = {}
 
     for elem in root.iter():
         tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
         if tag == "EventID" and elem.text:
             event_id = elem.text.strip()
+        elif tag == "TimeCreated":
+            timestamp = elem.attrib.get("SystemTime")
 
     for data in root.iter():
         tag = data.tag.split("}")[-1] if "}" in data.tag else data.tag
         if tag == "Data" and data.attrib.get("Name"):
             data_fields[data.attrib["Name"]] = (data.text or "").strip()
 
-    return event_id, data_fields
+    return event_id, timestamp, data_fields
 
 
 def _classify_event(event_id, data_fields):
     alert_type = "Normal Login"
     failed_logins = 0
-    source_ip = "8.8.8.8"
+    source_ip = None   # None when the event carries no usable IP — never invent one
+    process_risk = 0   # 1 when a known-malicious process / suspicious cmdline is seen
 
-    base = EVENT_ID_MAP.get(event_id)
-    if base:
-        alert_type, failed_logins = base
+    base = EVENT_ID_MAP.get(event_id, "Normal Login")
+    alert_type = base
+    # Honest per-event count: one 4625 record = one failed logon.
+    # (Aggregation across windows happens in the correlation engine.)
+    failed_logins = 1 if event_id == "4625" else 0
 
     # Extract real IP if present
     for ip_field in ("IpAddress", "SourceAddress", "Workstation"):
@@ -75,76 +84,70 @@ def _classify_event(event_id, data_fields):
         for bad in MALICIOUS_PROCESSES:
             if bad in process:
                 alert_type = "Credential Dumping"
-                failed_logins = 35
+                process_risk = 1
                 break
 
         if alert_type != "Credential Dumping":
             if "powershell" in process:
                 alert_type = "Suspicious Activity"
-                failed_logins = 12
                 for sus in SUSPICIOUS_CMDLINE:
                     if sus in cmd:
                         alert_type = "Malware Execution"
-                        failed_logins = 28
+                        process_risk = 1
                         break
             elif "cmd.exe" in process:
                 alert_type = "Suspicious Activity"
-                failed_logins = 8
 
     # Sysmon process access → lsass dump
     if event_id == "10":
         target = data_fields.get("TargetImage", "").lower()
         if "lsass" in target:
             alert_type = "Credential Dumping"
-            failed_logins = 40
+            process_risk = 1
 
-    return alert_type, failed_logins, source_ip
+    return alert_type, failed_logins, source_ip, process_risk
 
 
 def parse_evtx(file_path: str) -> list[dict]:
+    """
+    Parse a Windows .evtx file into a list of event dicts.
+
+    Each dict: {event_id, timestamp (ISO-8601 SystemTime or None),
+                alert_type, failed_logins, source_ip (or None)}.
+
+    Returns [] when the file yields no usable events.
+    NEVER fabricates events — callers must handle the empty case explicitly.
+    """
     if not EVTX_AVAILABLE:
-        return _simulated_logs()
+        raise RuntimeError(
+            "python-evtx is not installed; cannot parse .evtx files. "
+            "Install it with: pip install python-evtx"
+        )
 
     logs = []
-    try:
-        with Evtx(file_path) as log:
-            for record in log.records():
-                try:
-                    root = ET.fromstring(record.xml())
-                    event_id, data_fields = _extract_fields(root)
+    with Evtx(file_path) as log:
+        for record in log.records():
+            try:
+                root = ET.fromstring(record.xml())
+                event_id, timestamp, data_fields = _extract_fields(root)
 
-                    if event_id is None:
-                        continue
-
-                    alert_type, failed_logins, source_ip = _classify_event(
-                        event_id, data_fields
-                    )
-
-                    logs.append({
-                        "event_id":     event_id,
-                        "alert_type":   alert_type,
-                        "failed_logins": failed_logins,
-                        "source_ip":    source_ip,
-                    })
-
-                except ET.ParseError:
+                if event_id is None:
                     continue
 
-    except Exception as e:
-        print(f"EVTX parse error: {e}")
-        return _simulated_logs()
+                alert_type, failed_logins, source_ip, process_risk = _classify_event(
+                    event_id, data_fields
+                )
 
-    return logs if logs else _simulated_logs()
+                logs.append({
+                    "event_id":      event_id,
+                    "timestamp":     timestamp,
+                    "alert_type":    alert_type,
+                    "failed_logins": failed_logins,
+                    "source_ip":     source_ip,
+                    "process_risk":  process_risk,
+                })
 
+            except ET.ParseError:
+                continue
 
-def _simulated_logs() -> list[dict]:
-    """Realistic fallback when EVTX library unavailable."""
-    return [
-        {"event_id": "4625", "alert_type": "Brute Force",          "failed_logins": 22, "source_ip": "45.33.32.1"},
-        {"event_id": "4625", "alert_type": "Brute Force",          "failed_logins": 28, "source_ip": "185.220.101.1"},
-        {"event_id": "1",    "alert_type": "Malware Execution",    "failed_logins": 25, "source_ip": "10.0.0.5"},
-        {"event_id": "4672", "alert_type": "Privilege Escalation", "failed_logins": 30, "source_ip": "10.0.0.5"},
-        {"event_id": "10",   "alert_type": "Credential Dumping",   "failed_logins": 40, "source_ip": "10.0.0.5"},
-        {"event_id": "4624", "alert_type": "Normal Login",         "failed_logins":  0, "source_ip": "192.168.1.50"},
-        {"event_id": "4648", "alert_type": "Suspicious Login",     "failed_logins": 10, "source_ip": "77.88.55.1"},
-    ]
+    return logs

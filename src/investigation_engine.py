@@ -192,7 +192,7 @@ def _build_timeline_narrative(timeline_events: list) -> str:
 def _build_reasoning(
     alert_types:     list[str],
     unique_ips:      list[str],
-    ml_confidence:   float,
+    rules_avg:       float,
     anomaly_score:   float,
     baseline_score:  float,
     ueba_results:    list,
@@ -210,43 +210,33 @@ def _build_reasoning(
         f"{len(unique_ips)} unique IP(s): {', '.join(unique_ips[:5])}."
     )
 
-    # Step 2 — ML assessment
-    conf_pct = ml_confidence * 100
-    if ml_confidence >= 0.8:
+    # Step 2 — detection layers (honest: rules + unsupervised anomaly model)
+    if anomaly_score >= 60:
         steps.append(
-            f"ML classifier assessed this as a threat with {conf_pct:.0f}% confidence. "
-            f"Training patterns strongly match known attack signatures."
-        )
-    elif ml_confidence >= 0.5:
-        steps.append(
-            f"ML classifier flagged this as suspicious ({conf_pct:.0f}% threat probability). "
-            f"Pattern partially matches known attack signatures."
-        )
-    else:
-        steps.append(
-            f"ML classifier shows low threat probability ({conf_pct:.0f}%). "
-            f"Threat assessment driven primarily by rule-based and anomaly signals."
-        )
-
-    # Step 3 — Anomaly detection
-    if anomaly_score >= 70:
-        steps.append(
-            f"Isolation Forest anomaly detector flagged this event as highly anomalous "
-            f"(score {anomaly_score:.0f}/100). Behavioral pattern falls well outside "
-            f"the normal distribution of training events."
+            f"Unsupervised anomaly model (Isolation Forest trained on benign "
+            f"baselines) rates this activity as highly anomalous "
+            f"({anomaly_score:.0f}/100) — stranger than ~95% of normal activity. "
+            f"No labels were used; this is deviation from learned normal."
         )
     elif anomaly_score >= 40:
         steps.append(
-            f"Anomaly detection shows moderate deviation from baseline "
-            f"(score {anomaly_score:.0f}/100). Activity is unusual but not extreme."
+            f"Anomaly model shows moderate deviation from the benign baseline "
+            f"({anomaly_score:.0f}/100). Activity is unusual but not extreme."
         )
     else:
         steps.append(
-            f"Anomaly score is low ({anomaly_score:.0f}/100). Activity appears "
-            f"within normal behavioral range per Isolation Forest."
+            f"Anomaly model rates activity within normal bounds "
+            f"({anomaly_score:.0f}/100). Assessment driven primarily by "
+            f"rule-based signals."
+        )
+    if rules_avg >= 40:
+        steps.append(
+            f"Rule-based heuristics fired at {rules_avg:.0f}/100 on average — "
+            f"observable indicators (failed-login volume, process risk, "
+            f"event severity, off-hours) support the assessment."
         )
 
-    # Step 4 — Statistical baseline
+    # Step 3 — Statistical baseline
     if baseline_score >= 50:
         steps.append(
             f"Statistical baseline analysis shows significant deviation "
@@ -259,7 +249,7 @@ def _build_reasoning(
             f"activity is above normal thresholds in at least one dimension."
         )
 
-    # Step 5 — UEBA
+    # Step 4 — UEBA
     ueba_spikes = [u for u in ueba_results
                    if getattr(u, "spike_detected", False)]
     ueba_new_loc = [u for u in ueba_results
@@ -279,7 +269,7 @@ def _build_reasoning(
             f"possible VPN pivot or compromised relay."
         )
 
-    # Step 6 — Threat intel
+    # Step 5 — Threat intel
     malicious_ips = [ip for ip, score in ip_intel.items() if score >= 75]
     suspicious_ips = [ip for ip, score in ip_intel.items() if 30 <= score < 75]
     if malicious_ips:
@@ -294,7 +284,7 @@ def _build_reasoning(
             f"{', '.join(suspicious_ips[:5])}."
         )
 
-    # Step 7 — Correlation
+    # Step 6 — Correlation
     if chain_alerts:
         top = chain_alerts[0]
         steps.append(
@@ -307,7 +297,7 @@ def _build_reasoning(
             f"Burst detection triggered: {burst_alerts[0].description}"
         )
 
-    # Step 8 — Conclusion
+    # Step 7 — Conclusion
     if final_score >= 80:
         steps.append(
             f"CONCLUSION: Combined evidence strongly indicates a real attack in progress. "
@@ -477,8 +467,8 @@ def investigate(
         all_mitre.extend(a.mitre_techniques)
     all_mitre = list(dict.fromkeys(all_mitre))  # dedupe, preserve order
 
-    # ML / anomaly averages
-    ml_conf_avg  = (sum(d.ml_confidence  for d in detection_results) /
+    # Detection-layer averages (rules / anomaly / baseline — no classifiers)
+    rules_avg    = (sum(d.rules_score    for d in detection_results) /
                     max(len(detection_results), 1))
     anom_avg     = (sum(d.anomaly_score  for d in detection_results) /
                     max(len(detection_results), 1))
@@ -489,7 +479,7 @@ def investigate(
     classification     = _classify_attack(alert_types, bool(chain_alerts),
                                           correlation_result.attack_confidence)
     reasoning          = _build_reasoning(
-        alert_types, unique_ips, ml_conf_avg, anom_avg, base_avg,
+        alert_types, unique_ips, rules_avg, anom_avg, base_avg,
         ueba_results, ip_intel, chain_alerts, burst_alerts, final_score,
     )
     timeline_narrative = _build_timeline_narrative(correlation_result.timeline)
@@ -508,7 +498,7 @@ def investigate(
         attack_summary         = summary,
         attack_classification  = classification,
         reasoning_steps        = reasoning,
-        confidence             = correlation_result.attack_confidence or int(ml_conf_avg * 100),
+        confidence             = correlation_result.attack_confidence or int(rules_avg),
         severity               = severity,
         recommended_actions    = actions,
         iocs                   = iocs,
