@@ -1,0 +1,43 @@
+title: Scheduled Task Persistence With Suspicious Path
+id: 1d7e5061-3f8c-4e52-cd60-518c0e1f2031
+status: experimental
+description: >
+  A scheduled task (4698) pointing at a user-writable or temp path —
+  the persistence mechanism of choice for malware that wants to survive
+  a reboot. Known updater paths are filtered out.
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4698
+    TaskName|contains:
+      - '\Users\'
+      - '\Temp\'
+      - '\AppData\'
+  filter_known_updaters:
+    TaskName|contains:
+      - '\Microsoft\'
+      - 'GoogleUpdate'
+      - 'Adobe'
+  condition: selection and not filter_known_updaters
+falsepositives:
+  - Legitimate user software scheduling its own updates from AppData
+  - IT tooling deploying per-user tasks
+level: high
+tags:
+  - attack.persistence
+  - attack.t1053.005
+conversion_note: >
+  First-pass translation — hand-review field names against your SIEM
+  schema before deployment. Extend the updater filter with your own
+  software inventory before enabling.
+spl: 'index=wineventlog EventCode=4698 (TaskName="*\\Users\\*" OR TaskName="*\\Temp\\*" OR TaskName="*\\AppData\\*") | search NOT (TaskName="*Microsoft*" OR TaskName="*GoogleUpdate*" OR TaskName="*Adobe*")'
+kql: 'SecurityEvent | where EventID == 4698 | where TaskName contains @"\Users\" or TaskName contains @"\Temp\" or TaskName contains @"\AppData\" | where TaskName !contains "Microsoft" and TaskName !contains "GoogleUpdate" and TaskName !contains "Adobe"'
+tests:
+  positive:
+    EventID: 4698
+    TaskName: '\Users\jdoe\AppData\Roaming\evil.exe'
+  negative:
+    EventID: 4698
+    TaskName: '\Microsoft\Windows\UpdateOrchestrator\Reboot'

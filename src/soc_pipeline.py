@@ -20,7 +20,7 @@ from typing import Optional
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ── Module imports ─────────────────────────────────────────────────────────────
-from log_parser          import parse_evtx
+from log_parser          import parse_evtx, EVENT_ID_MAP
 from detection_engine    import analyze, analyze_batch, DetectionResult
 from ueba_engine         import analyze_from_log, UEBAResult, persist as ueba_persist
 from correlation_engine  import correlate_events, CorrelationResult
@@ -126,6 +126,27 @@ def _batch_ip_intel(ips: list[str]) -> dict:
 # MAIN PIPELINE
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _normalize_raw_log(log: dict) -> dict:
+    """Map a caller-supplied raw log dict to the pipeline's label space.
+
+    The EVTX path classifies every event through EVENT_ID_MAP; raw-dict
+    callers historically passed free-text labels ("Failed Logon",
+    "Explicit Credential Logon") that no detector recognizes, so
+    correlation, UEBA threat-type matching, and MITRE mapping silently
+    missed real chains. Normalizing here — raw path ONLY — makes raw input
+    behave exactly like parsed EVTX input. A caller label is kept only when
+    the event_id is unknown to the map. failed_logins is never touched:
+    callers (e.g. the simulator) set it deliberately.
+    """
+    out = dict(log)
+    eid = str(log.get("event_id", ""))
+    if eid in EVENT_ID_MAP:
+        out["alert_type"] = EVENT_ID_MAP[eid]
+    elif "alert_type" not in out:
+        out["alert_type"] = "Normal Login"
+    return out
+
+
 def run_pipeline(
     evtx_path:    Optional[str] = None,
     raw_logs:     Optional[list[dict]] = None,
@@ -153,7 +174,11 @@ def run_pipeline(
     if raw_logs is None and evtx_path:
         logs = parse_evtx(evtx_path)
     elif raw_logs is not None:
-        logs = raw_logs
+        # Raw-dict path ONLY: normalize labels to the EVENT_ID_MAP space.
+        # EVTX input is already classified by parse_evtx — never re-map it,
+        # or the richer Sysmon labels (Malware Execution, Credential
+        # Dumping) would be lost.
+        logs = [_normalize_raw_log(l) for l in raw_logs]
     else:
         logs = []
 

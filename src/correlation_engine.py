@@ -10,8 +10,9 @@ Detects:
   - Distributed attacks (same pattern, multiple IPs)
 
 All detection uses sliding time windows:
-  - 2 min  → burst detection
-  - 10 min → slow brute force
+  - 2 min  → burst detection (per IP)
+  - 15 min → distributed burst (coordinated failed auth, 3+ IPs)
+  - 60 min → slow brute force
   - 30 min → full attack chain
 """
 
@@ -64,7 +65,9 @@ KNOWN_CHAINS = [
 
 # Windows (seconds)
 WINDOW_BURST  = 120    #  2 min
-WINDOW_SLOW   = 600    # 10 min
+WINDOW_SLOW   = 3600   # 60 min — a "slow" attack slower than 8 fails in
+                        # 10 min previously evaded the detector entirely
+WINDOW_DISTRIBUTED = 900  # 15 min, distributed failed-auth window
 WINDOW_CHAIN  = 1800   # 30 min
 
 BURST_THRESHOLD      = 5    # events in 2 min → burst
@@ -90,6 +93,7 @@ class TimelineEvent:
     stage:         str = ""         # MITRE stage (filled by correlator)
     is_pivot:      bool = False     # marks escalation pivot points
     is_escalation: bool = False
+    process_risk:  int  = 0  # 1 when a known-malicious/suspicious process was seen
 
 
 @dataclass
@@ -222,12 +226,23 @@ def _detect_burst(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
                 attack_type      = "burst",
             ))
 
-    # Also check: many IPs hitting in short window (distributed burst)
-    all_ips = list(by_ip.keys())
-    total   = len(window)
+    # Also check: many IPs failing auth in a wider window (distributed
+    # burst). Two deliberate constraints, both FP-driven: the window is
+    # 15 min (a spray spread over 15 min previously evaded the 2-min
+    # window entirely), and only failed-auth labels count — otherwise
+    # ordinary logon traffic from 3+ IPs would trip it constantly.
+    dist_window = _window_filter(events, anchor, WINDOW_DISTRIBUTED)
+    dist_events = [e for e in dist_window
+                   if e.alert_type in ("Brute Force", "Credential Stuffing",
+                                       "Password Spray", "Suspicious Login")]
+    dist_by_ip: dict[str, list] = defaultdict(list)
+    for e in dist_events:
+        dist_by_ip[e.source_ip].append(e)
+    all_ips = list(dist_by_ip.keys())
+    total   = len(dist_events)
     if len(all_ips) >= 3 and total >= BURST_THRESHOLD * 2:
         techs: list[str] = []
-        for at in {e.alert_type for e in window}:
+        for at in {e.alert_type for e in dist_events}:
             techs.extend(mitre.techniques_for_alert(at))
         techs = list(dict.fromkeys(techs))
         alerts.append(CorrelatedAlert(
@@ -235,14 +250,14 @@ def _detect_burst(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
             severity         = "Critical",
             confidence       = min(92, 55 + 5 * len(all_ips) + min(10, total // 5)),
             description      = (
-                f"{total} events from {len(all_ips)} distinct IPs in "
-                f"{WINDOW_BURST // 60} min — coordinated attack."
+                f"{total} failed-auth events from {len(all_ips)} distinct "
+                f"IPs in {WINDOW_DISTRIBUTED // 60} min — coordinated attack."
             ),
             mitre_techniques = techs,
             event_count      = total,
-            window_seconds   = WINDOW_BURST,
-            first_event_ts   = window[0].timestamp,
-            last_event_ts    = window[-1].timestamp,
+            window_seconds   = WINDOW_DISTRIBUTED,
+            first_event_ts   = dist_events[0].timestamp,
+            last_event_ts    = dist_events[-1].timestamp,
             source_ips       = all_ips,
             attack_type      = "distributed",
         ))
@@ -379,6 +394,112 @@ def _detect_chains(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
 # MAIN CORRELATOR
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _detect_offhours_persistence(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
+    """
+    Privilege escalation followed by a scheduled task, OFF-HOURS only.
+
+    A daytime priv → task sequence is routine admin work and must NOT
+    fire — that is why this is a dedicated time-gated detector instead of
+    a generic KNOWN_CHAINS pattern. Off-hours (hour < 7 or >= 19, in the
+    log's own timezone) turns the same sequence into a persistence
+    signal. Mirrors Sigma rule soc-det-004's time condition.
+    """
+    alerts = []
+    if not events:
+        return alerts
+    anchor = _parse_ts(events[-1].timestamp)
+    window = _window_filter(events, anchor, WINDOW_CHAIN)
+    by_ip: dict[str, list[TimelineEvent]] = defaultdict(list)
+    for e in window:
+        by_ip[e.source_ip].append(e)
+    for ip, evs in by_ip.items():
+        evs_sorted = sorted(evs, key=lambda e: _parse_ts(e.timestamp))
+        for i, e in enumerate(evs_sorted):
+            if e.alert_type != "Privilege Escalation":
+                continue
+            hour = _parse_ts(e.timestamp).hour
+            if not (hour < 7 or hour >= 19):
+                continue
+            task = next((t for t in evs_sorted[i + 1:]
+                         if t.event_id == "4698"), None)
+            if task is None:
+                continue
+            supporting = 2
+            confidence = min(95, 55 + 8 * 2 + min(15, supporting))
+            techniques: list[str] = []
+            for step in ("Privilege Escalation", "Suspicious Activity"):
+                techniques.extend(mitre.techniques_for_alert(step))
+            techniques = list(dict.fromkeys(techniques))
+            alerts.append(CorrelatedAlert(
+                name             = "Off-Hours Privilege → Scheduled Task",
+                severity         = "High",
+                confidence       = confidence,
+                description      = (
+                    f"Source {ip}: privilege escalation at {hour:02d}:00 "
+                    f"followed by a scheduled task — off-hours persistence."),
+                mitre_techniques = techniques,
+                event_count      = supporting,
+                window_seconds   = WINDOW_CHAIN,
+                first_event_ts   = e.timestamp,
+                last_event_ts    = task.timestamp,
+                source_ips       = [ip],
+                attack_type      = "chain",
+            ))
+            break
+    return alerts
+
+
+def _detect_drop_persistence(events: list[TimelineEvent]) -> list[CorrelatedAlert]:
+    """
+    Suspicious process creation followed by a scheduled task.
+
+    Both stages normalize to "Suspicious Activity", so no alert-type
+    pattern can express this — the detector keys on observables instead:
+    an event with process_risk == 1 followed by a 4698 within 30 min,
+    same IP. High severity, chain-type alert so the fusion floor applies.
+    """
+    alerts = []
+    if not events:
+        return alerts
+    anchor = _parse_ts(events[-1].timestamp)
+    window = _window_filter(events, anchor, WINDOW_CHAIN)
+    by_ip: dict[str, list[TimelineEvent]] = defaultdict(list)
+    for e in window:
+        by_ip[e.source_ip].append(e)
+    for ip, evs in by_ip.items():
+        evs_sorted = sorted(evs, key=lambda e: _parse_ts(e.timestamp))
+        for i, e in enumerate(evs_sorted):
+            if e.process_risk != 1:
+                continue
+            task = next((t for t in evs_sorted[i + 1:]
+                         if t.event_id == "4698"), None)
+            if task is None:
+                continue
+            supporting = 2
+            confidence = min(95, 55 + 8 * 2 + min(15, supporting))
+            techniques: list[str] = []
+            for step in ("Malware Execution", "Suspicious Activity"):
+                techniques.extend(mitre.techniques_for_alert(step))
+            techniques = list(dict.fromkeys(techniques))
+            alerts.append(CorrelatedAlert(
+                name             = "Suspicious Process → Scheduled Task",
+                severity         = "High",
+                confidence       = confidence,
+                description      = (
+                    f"Source {ip}: suspicious process creation followed "
+                    f"by a scheduled task — drop plus persistence."),
+                mitre_techniques = techniques,
+                event_count      = supporting,
+                window_seconds   = WINDOW_CHAIN,
+                first_event_ts   = e.timestamp,
+                last_event_ts    = task.timestamp,
+                source_ips       = [ip],
+                attack_type      = "chain",
+            ))
+            break
+    return alerts
+
+
 def correlate_events(raw_logs: list[dict]) -> CorrelationResult:
     """
     Main entry point.
@@ -417,6 +538,7 @@ def correlate_events(raw_logs: list[dict]) -> CorrelationResult:
             alert_type    = log.get("alert_type", "Normal Login"),
             source_ip     = log.get("source_ip") or "unknown",
             failed_logins = int(log.get("failed_logins", 0)),
+            process_risk  = int(log.get("process_risk") or 0),
             location      = log.get("location", "Unknown"),
             device        = log.get("device", "Unknown"),
         ))
@@ -430,7 +552,9 @@ def correlate_events(raw_logs: list[dict]) -> CorrelationResult:
     # Run detectors
     burst_alerts  = _detect_burst(timeline)
     slow_alerts   = _detect_slow_brute_force(timeline)
-    chain_alerts  = _detect_chains(timeline)
+    chain_alerts  = (_detect_chains(timeline)
+                     + _detect_offhours_persistence(timeline)
+                     + _detect_drop_persistence(timeline))
 
     all_alerts = burst_alerts + slow_alerts + chain_alerts
 

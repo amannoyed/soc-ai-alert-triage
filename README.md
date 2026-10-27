@@ -65,6 +65,7 @@ python scripts/generate_baseline.py --n 2000   # → data/baseline_benign.csv
 | 📂 Log Investigation | Upload an `.evtx`; full pipeline: investigation report, correlation, MITRE, timeline, IOCs |
 | 📊 Threat Intel | AbuseIPDB lookup (needs `ABUSEIPDB_API_KEY` in secrets/env) |
 | 📋 Triage Queue | Persistent SQLite queue: investigate → confirm threat / false positive / suppress; decisions train the feedback model |
+| 📜 Detection Library | Sigma rules as source of truth + first-pass SPL/KQL translations, FP notes, test cases |
 
 ## Project structure
 
@@ -87,10 +88,16 @@ src/
   ingest.py               watch-folder tailing (.csv/.evtx)
   simulator.py            explicitly-synthetic demo attack scenarios
   predict.py              AbuseIPDB intel lookups
+  detection_library.py    load the Sigma detection library
+  ir_report.py            NIST IR report export (technical + exec summary)
 scripts/
   smoke_test.py           headless regression suite (20 checks)
   generate_baseline.py    synthetic benign baseline generator
+  validate_detections.py  test the Sigma library (6/6 pass)
+  calibrate.py            score the pipeline on a labelled corpus
 data/baseline_benign.csv documented synthetic benign training data
+data/calibration_corpus.json labelled synthetic corpus (10 cases, TEST-NET IPs)
+detections/*.yml          Sigma rules + first-pass SPL/KQL translations
 logs/UACME_59_Sysmon.evtx real Sysmon capture (UACMe test) for testing
 ```
 
@@ -106,6 +113,20 @@ logs/UACME_59_Sysmon.evtx real Sysmon capture (UACMe test) for testing
   clean-by-default and the UI says so.
 - On Streamlit Cloud, the SQLite queue and learned profiles are ephemeral
   (they regenerate); run locally or attach storage for persistence.
+- Calibration (2026-10-27, `scripts/calibrate.py` on a 10-case synthetic
+  corpus): 10/10 correct, 0 over-triaged, 0 under-triaged — after the
+  chain-fix round: raw-dict labels normalized to EVENT_ID_MAP (the raw
+  path previously skipped the normalization the EVTX path applies), a
+  verdict-level floor (a High/Critical chain or distributed alert always
+  reaches an analyst, final >= 35, regardless of the per-event blend),
+  slow-brute-force window 10 min → 60 min, distributed window 2 min →
+  15 min counting failed-auth labels only, and two new chain detectors
+  (off-hours privilege → scheduled task; suspicious process →
+  scheduled task). Daytime privilege → task is deliberately NOT flagged
+  (routine admin work). Residual gap, stated plainly: attacks slower
+  than the 60-min / wider than the 15-min windows still evade, and the
+  corpus is synthetic — these numbers measure the harness, not
+  production accuracy.
 
 ## Why this design
 

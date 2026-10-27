@@ -1,0 +1,34 @@
+title: Brute Force Logon Burst
+id: 7f3a1c2e-9b4d-4a1e-8f2c-1d5e6a7b8c9d
+status: experimental
+description: >
+  Many failed logons (4625) from one source IP in a short window — the
+  classic password-spraying / brute-force pattern. Aggregation rule: the
+  count threshold is the detection, not any single event.
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+  condition: selection | count() by SourceIp > 20
+  timeframe: 5m
+falsepositives:
+  - Misconfigured service account retrying with an expired password
+  - Users mistyping after a password reset wave
+level: high
+tags:
+  - attack.credential-access
+  - attack.t1110.001
+conversion_note: >
+  First-pass translation — hand-review field names against your SIEM
+  schema before deployment. Field misalignment is the #1 cause of dead rules.
+spl: 'index=wineventlog EventCode=4625 | stats count by src_ip | where count > 20'
+kql: 'SecurityEvent | where EventID == 4625 | summarize Failures = count() by IpAddress | where Failures > 20'
+tests:
+  positive:
+    EventID: 4625
+    SourceIp: 45.33.32.1
+  negative:
+    EventID: 4624
+    SourceIp: 45.33.32.1

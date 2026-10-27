@@ -1,0 +1,37 @@
+title: Off-Hours Privilege Assignment
+id: 0c6d4f50-2e7b-4d41-bc5f-407b9d0e1f20
+status: experimental
+description: >
+  Special privileges assigned (4672) or a member added to a privileged
+  group (4732) outside business hours. Privilege changes are rare; at
+  03:00 they are rarer, and that is the signal.
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID:
+      - 4672
+      - 4732
+  condition: selection
+  # Sigma has no native hour-of-day operator: enforce this alongside the
+  # rule in your SIEM (hour < 7 or hour >= 19, local time).
+  time_condition: hour < 7 or hour >= 19
+falsepositives:
+  - On-call admins doing legitimate out-of-hours maintenance
+  - Automated provisioning jobs running overnight
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1078
+conversion_note: >
+  First-pass translation — hand-review field names against your SIEM
+  schema before deployment. Add the time_condition to the query; without
+  it this rule fires on every daytime privilege change.
+spl: 'index=wineventlog (EventCode=4672 OR EventCode=4732) | where (date_hour < 7 OR date_hour >= 19)'
+kql: 'SecurityEvent | where EventID in (4672, 4732) | where hourofday(TimeGenerated) < 7 or hourofday(TimeGenerated) >= 19'
+tests:
+  positive:
+    EventID: 4672
+  negative:
+    EventID: 4624

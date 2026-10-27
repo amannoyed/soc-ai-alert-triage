@@ -8,8 +8,13 @@ alert_type) within a dedup window increment a counter instead of creating
 new rows. This is what makes it a triage queue rather than an event list.
 
 Analyst workflow states:
-  open → investigating → closed_true_positive | closed_false_positive
+  open → investigating → escalated → closed_true_positive | closed_false_positive
   any → suppressed (temporarily muted)
+
+SLA targets (configurable via SLA_TARGET_HOURS; defaults mirror common
+SOC practice, not a compliance claim): Critical 4h, High 8h, Medium 24h,
+Low 72h — measured from first_seen while the alert is still open,
+investigating, or escalated.
 
 The closed_* states are honest analyst labels. feedback_model.py trains a
 RandomForest on them — the only supervised model in the project, and the
@@ -31,8 +36,15 @@ _DB_PATH  = os.path.join(_BASE, "model", "triage.db")
 
 DEDUP_WINDOW_MINUTES = 60
 
-STATUSES = ("open", "investigating", "closed_true_positive",
-            "closed_false_positive", "suppressed")
+STATUSES = ("open", "investigating", "escalated",
+            "closed_true_positive", "closed_false_positive", "suppressed")
+
+# SLA response targets in hours, by plain severity. Configurable here;
+# they are operating targets for this console, not a compliance claim.
+SLA_TARGET_HOURS = {"Critical": 4, "High": 8, "Medium": 24, "Low": 72}
+
+# Statuses that still carry SLA pressure (closed/suppressed do not).
+SLA_ACTIVE_STATUSES = ("open", "investigating", "escalated")
 
 _SEV_TO_RISK = {"Critical": 90, "High": 70, "Medium": 45, "Low": 20}
 
@@ -43,6 +55,34 @@ def _plain_severity(sev: str) -> str:
         if plain in str(sev):
             return plain
     return "Low"
+
+
+def sla_for_alert(alert: dict, now: datetime | None = None) -> dict:
+    """
+    Age + SLA state for one alert row (dict from list_alerts()/get()).
+
+    Returns {age_hours, target_hours, overdue, active} where active means
+    the alert is still open/investigating/escalated. Closed and suppressed
+    alerts report active=False and overdue=False regardless of age.
+    Unparseable timestamps report age_hours=None and overdue=False —
+    never a fabricated age.
+    """
+    status = str(alert.get("status", ""))
+    severity = _plain_severity(alert.get("severity", "Low"))
+    target = SLA_TARGET_HOURS.get(severity, 72)
+    active = status in SLA_ACTIVE_STATUSES
+    age_hours: float | None = None
+    try:
+        first = datetime.fromisoformat(str(alert.get("first_seen", "")))
+        ref = now or datetime.now(timezone.utc)
+        if first.tzinfo is None:
+            first = first.replace(tzinfo=timezone.utc)
+        age_hours = max(0.0, (ref - first).total_seconds() / 3600.0)
+    except Exception:
+        age_hours = None
+    overdue = bool(active and age_hours is not None and age_hours > target)
+    return {"age_hours": age_hours, "target_hours": target,
+            "overdue": overdue, "active": active}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
