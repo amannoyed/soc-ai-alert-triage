@@ -113,14 +113,20 @@ logs/UACME_59_Sysmon.evtx real Sysmon capture (UACMe test) for testing
   clean-by-default and the UI says so.
 - On Streamlit Cloud, the SQLite queue and learned profiles are ephemeral
   (they regenerate); run locally or attach storage for persistence.
-- Calibration (2026-10-26, `scripts/calibrate.py` on a 10-case synthetic
-  corpus): 5/10 correct, 0 over-triaged, 5 under-triaged — all
-  multi-event chains (slow stuffing, lateral chain, off-hours insider,
-  malware drop, distributed spray). Mechanism: per-event scores stay low
-  and no correlation alert fires, so weak signals across events do not
-  accumulate into a verdict. The corpus measures this gap; it does not
-  tune the scorer to hide it. Next step: investigate chain-rule
-  conditions before changing any weight.
+- Calibration (2026-10-27, `scripts/calibrate.py` on a 10-case synthetic
+  corpus): 10/10 correct, 0 over-triaged, 0 under-triaged — after the
+  chain-fix round: raw-dict labels normalized to EVENT_ID_MAP (the raw
+  path previously skipped the normalization the EVTX path applies), a
+  verdict-level floor (a High/Critical chain or distributed alert always
+  reaches an analyst, final >= 35, regardless of the per-event blend),
+  slow-brute-force window 10 min → 60 min, distributed window 2 min →
+  15 min counting failed-auth labels only, and two new chain detectors
+  (off-hours privilege → scheduled task; suspicious process →
+  scheduled task). Daytime privilege → task is deliberately NOT flagged
+  (routine admin work). Residual gap, stated plainly: attacks slower
+  than the 60-min / wider than the 15-min windows still evade, and the
+  corpus is synthetic — these numbers measure the harness, not
+  production accuracy.
 
 ## Why this design
 
