@@ -5,3 +5,4 @@ joblib
 matplotlib
 requests
 python-evtx
+pyyaml

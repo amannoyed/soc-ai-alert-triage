@@ -1,0 +1,39 @@
+title: Lateral Movement Via Explicit Credentials
+id: 9b5c3e4f-1d6a-4c30-ab4e-3f7a8c9d0e1f
+status: experimental
+description: >
+  An explicit-credential logon (4648) from a non-service account — the
+  pattern behind pass-the-hash style lateral movement. Service accounts
+  are filtered out; what remains is a human-shaped credential use across hosts.
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4648
+  filter_service_accounts:
+    TargetUserName:
+      - SYSTEM
+      - LOCAL SERVICE
+      - NETWORK SERVICE
+  condition: selection and not filter_service_accounts
+falsepositives:
+  - Admins using runas / explicit credentials for legitimate remote work
+  - Backup and deployment tooling using stored credentials
+level: high
+tags:
+  - attack.lateral-movement
+  - attack.t1021
+conversion_note: >
+  First-pass translation — hand-review field names against your SIEM
+  schema before deployment. Extend the filter with your own service
+  accounts before enabling.
+spl: 'index=wineventlog EventCode=4648 TargetUserName!="SYSTEM" TargetUserName!="LOCAL SERVICE" TargetUserName!="NETWORK SERVICE"'
+kql: 'SecurityEvent | where EventID == 4648 | where TargetUserName !in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")'
+tests:
+  positive:
+    EventID: 4648
+    TargetUserName: jdoe
+  negative:
+    EventID: 4648
+    TargetUserName: SYSTEM

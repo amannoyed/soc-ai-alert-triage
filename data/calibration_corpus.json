@@ -1,0 +1,715 @@
+{
+    "_note": "Labelled synthetic corpus for scripts/calibrate.py. IPs are 203.0.113.0/24 (TEST-NET documentation range) \u2014 no real address is implicated. expected_escalate encodes what a SOC analyst should escalate, not what the pipeline currently does; disagreement is a finding, not a mislabel.",
+    "cases": [
+        {
+            "events": [
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:00:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:00:10+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:00:20+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:00:30+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:00:40+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:00:50+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:01:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:01:10+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:01:20+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:01:30+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:01:40+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:01:50+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:02:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:02:10+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:02:20+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:02:30+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:02:40+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:02:50+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:03:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:03:10+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:03:20+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:03:30+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:03:40+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:03:50+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.10",
+                    "timestamp": "2026-10-26T10:04:00+00:00"
+                }
+            ],
+            "expected_escalate": true,
+            "name": "brute_force_burst",
+            "note": "25 failed logons from one IP in 4 minutes."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:00:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:05:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:10:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:15:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:20:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:25:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:30:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:35:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:40:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:45:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:50:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.11",
+                    "timestamp": "2026-10-26T10:55:00+00:00"
+                }
+            ],
+            "expected_escalate": true,
+            "name": "slow_credential_stuffing",
+            "note": "12 failed logons from one IP spread over 55 minutes \u2014 under burst thresholds by design."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Explicit Credential Logon",
+                    "device": "Windows",
+                    "event_id": "4648",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.12",
+                    "timestamp": "2026-10-26T11:00:00+00:00"
+                },
+                {
+                    "alert_type": "Successful Logon",
+                    "device": "Windows",
+                    "event_id": "4624",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.12",
+                    "timestamp": "2026-10-26T11:02:00+00:00"
+                },
+                {
+                    "alert_type": "Special Privileges Assigned",
+                    "device": "Windows",
+                    "event_id": "4672",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.12",
+                    "timestamp": "2026-10-26T11:04:00+00:00"
+                },
+                {
+                    "alert_type": "Scheduled Task Created",
+                    "device": "Windows",
+                    "event_id": "4698",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.12",
+                    "timestamp": "2026-10-26T11:06:00+00:00"
+                }
+            ],
+            "expected_escalate": true,
+            "name": "lateral_movement_chain",
+            "note": "Explicit-credential logon, then privilege assignment, then scheduled task \u2014 a chain, not a single event."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Special Privileges Assigned",
+                    "device": "Windows",
+                    "event_id": "4672",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.13",
+                    "timestamp": "2026-10-26T03:00:00+00:00"
+                },
+                {
+                    "alert_type": "Scheduled Task Created",
+                    "device": "Windows",
+                    "event_id": "4698",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.13",
+                    "timestamp": "2026-10-26T03:05:00+00:00"
+                }
+            ],
+            "expected_escalate": true,
+            "name": "insider_off_hours",
+            "note": "Privilege assignment plus a scheduled task at 03:00 UTC."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Process Created",
+                    "device": "Windows",
+                    "event_id": "4688",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 1,
+                    "source_ip": "203.0.113.14",
+                    "timestamp": "2026-10-26T12:00:00+00:00"
+                },
+                {
+                    "alert_type": "Scheduled Task Created",
+                    "device": "Windows",
+                    "event_id": "4698",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.14",
+                    "timestamp": "2026-10-26T12:02:00+00:00"
+                }
+            ],
+            "expected_escalate": true,
+            "name": "malware_drop",
+            "note": "Suspicious process creation followed by a scheduled task \u2014 drop plus persistence."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.30",
+                    "timestamp": "2026-10-26T13:00:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.31",
+                    "timestamp": "2026-10-26T13:01:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.32",
+                    "timestamp": "2026-10-26T13:02:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.33",
+                    "timestamp": "2026-10-26T13:03:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.34",
+                    "timestamp": "2026-10-26T13:04:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.30",
+                    "timestamp": "2026-10-26T13:05:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.31",
+                    "timestamp": "2026-10-26T13:06:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.32",
+                    "timestamp": "2026-10-26T13:07:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.33",
+                    "timestamp": "2026-10-26T13:08:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.34",
+                    "timestamp": "2026-10-26T13:09:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.30",
+                    "timestamp": "2026-10-26T13:10:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.31",
+                    "timestamp": "2026-10-26T13:11:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.32",
+                    "timestamp": "2026-10-26T13:12:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.33",
+                    "timestamp": "2026-10-26T13:13:00+00:00"
+                },
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.34",
+                    "timestamp": "2026-10-26T13:14:00+00:00"
+                }
+            ],
+            "expected_escalate": true,
+            "name": "distributed_spray",
+            "note": "Five source IPs, three failed logons each, same window \u2014 one actor spread thin."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Successful Logon",
+                    "device": "Windows",
+                    "event_id": "4624",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.20",
+                    "timestamp": "2026-10-26T10:00:00+00:00"
+                }
+            ],
+            "expected_escalate": false,
+            "name": "benign_business_logon",
+            "note": "One ordinary successful logon during business hours."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Failed Logon",
+                    "device": "Windows",
+                    "event_id": "4625",
+                    "failed_logins": 1,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.21",
+                    "timestamp": "2026-10-26T10:00:00+00:00"
+                }
+            ],
+            "expected_escalate": false,
+            "name": "single_failed_logon",
+            "note": "One failed logon \u2014 mistyped password, not an attack."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Scheduled Task Created",
+                    "device": "Windows",
+                    "event_id": "4698",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.22",
+                    "timestamp": "2026-10-26T10:00:00+00:00"
+                }
+            ],
+            "expected_escalate": false,
+            "name": "legit_scheduled_task",
+            "note": "One scheduled task with no suspicious context."
+        },
+        {
+            "events": [
+                {
+                    "alert_type": "Special Privileges Assigned",
+                    "device": "Windows",
+                    "event_id": "4672",
+                    "failed_logins": 0,
+                    "location": "Unknown",
+                    "process_risk": 0,
+                    "source_ip": "203.0.113.23",
+                    "timestamp": "2026-10-26T10:00:00+00:00"
+                }
+            ],
+            "expected_escalate": false,
+            "name": "benign_admin_daytime",
+            "note": "One daytime privilege assignment \u2014 normal admin work."
+        }
+    ]
+}
