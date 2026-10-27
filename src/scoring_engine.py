@@ -12,6 +12,9 @@ Combines:
   - Threat intelligence        (AbuseIPDB)
 
 All weights are configurable via ScoringConfig.
+# Chain floor: a High/Critical chain or distributed-attack alert always
+# reaches an analyst — see Rule 6 in compute_score (final >= 35
+# regardless of the weighted blend).
 """
 
 from dataclasses import dataclass, field, asdict
@@ -268,6 +271,23 @@ def compute_score(
                 f"-{cfg.feedback_penalty} — Analysts marked similar past "
                 f"alerts as false positives (feedback P={feedback_prob:.2f})"
             )
+
+    # Rule 6 — Confirmed coordinated-attack floor: a multi-stage chain or
+    # a distributed attack is verdict-level evidence. Per-event layers can
+    # stay low while coordination is confirmed (weak signals spread across
+    # events or IPs), so a High/Critical chain or distributed alert always
+    # reaches an analyst, regardless of the weighted blend.
+    if correlation_result is not None:
+        chain_alerts = [a for a in getattr(correlation_result, "alerts", [])
+                        if getattr(a, "attack_type", "")
+                        in ("chain", "distributed")]
+        if any(getattr(a, "severity", "") in ("High", "Critical")
+               for a in chain_alerts):
+            if weighted_sum < 35:
+                weighted_sum = 35.0
+                overrides.append(
+                    "+floor=35 — confirmed chain/distributed attack (High+)"
+                )
 
     final = int(round(min(max(weighted_sum, 0), 100.0)))
 

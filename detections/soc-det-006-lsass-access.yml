@@ -1,0 +1,49 @@
+title: LSASS Process Access (Credential Dumping Pattern)
+id: 2e8f6172-409d-4f63-de71-629d1f203142
+status: experimental
+description: >
+  Sysmon process-access (Event 10) targeting LSASS with access rights
+  associated with credential dumping. Known security products are
+  filtered out; what remains is a process reading the credential store.
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  selection:
+    EventID: 10
+    TargetImage|endswith: '\lsass.exe'
+    GrantedAccess:
+      - '0x1010'
+      - '0x1410'
+      - '0x1438'
+      - '0x1FFFFF'
+  filter_security_products:
+    SourceImage|contains:
+      - 'MsMpEng.exe'
+      - 'SenseIR.exe'
+      - 'CrowdStrike'
+  condition: selection and not filter_security_products
+falsepositives:
+  - EDR and AV products scanning LSASS (filtered, but new products appear)
+  - Legitimate admin tooling inspecting process memory
+level: critical
+tags:
+  - attack.credential-access
+  - attack.t1003.001
+conversion_note: >
+  First-pass translation — hand-review field names against your SIEM
+  schema before deployment. GrantedAccess values vary by Windows build;
+  validate against your own Sysmon telemetry before enabling.
+spl: 'index=sysmon EventCode=10 TargetImage="*\\lsass.exe" (GrantedAccess="0x1010" OR GrantedAccess="0x1410" OR GrantedAccess="0x1438" OR GrantedAccess="0x1FFFFF") | search NOT (SourceImage="*MsMpEng*" OR SourceImage="*SenseIR*" OR SourceImage="*CrowdStrike*")'
+kql: 'SysmonEvent | where EventID == 10 | where TargetImage endswith @"\lsass.exe" | where GrantedAccess in ("0x1010", "0x1410", "0x1438", "0x1FFFFF") | where SourceImage !contains "MsMpEng" and SourceImage !contains "SenseIR" and SourceImage !contains "CrowdStrike"'
+tests:
+  positive:
+    EventID: 10
+    TargetImage: 'C:\Windows\System32\lsass.exe'
+    GrantedAccess: '0x1410'
+    SourceImage: 'C:\Users\jdoe\Downloads\mimikatz.exe'
+  negative:
+    EventID: 10
+    TargetImage: 'C:\Windows\System32\lsass.exe'
+    GrantedAccess: '0x1410'
+    SourceImage: 'C:\Program Files\Windows Defender\MsMpEng.exe'

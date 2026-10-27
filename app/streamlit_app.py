@@ -38,7 +38,9 @@ try:
     from predict         import check_ip_reputation
     from log_parser      import parse_evtx, EVENT_ID_MAP
     from timeline_engine import get_progression_summary, get_pivot_events
-    from triage_store    import TriageStore
+    from triage_store    import TriageStore, sla_for_alert
+    from detection_library import load_detections
+    from ir_report       import build_ir_report
     from simulator       import AttackSimulator, SCENARIOS
     from ingest          import WatchFolder
     import feedback_model
@@ -67,13 +69,38 @@ def _json_loads(s):
 
 st.markdown("""
 <style>
-[data-testid="stSidebar"]    { background-color: #0d1117; }
-.block-container              { padding-top: 1.2rem; padding-bottom: 1rem; }
-div[data-testid="stMetric"]  { background: #161b22; border: 1px solid #30363d;
-                                border-radius: 8px; padding: 10px 14px; }
-div[data-testid="stExpander"] { border: 1px solid #21262d; border-radius: 6px; }
-hr                            { border-color: #21262d; }
-code                          { background: #161b22 !important; }
+/* Apple material system, translated to Streamlit: dark glass, serious, colourful accents */
+html, body, [class*="css"] {
+  font-family: -apple-system, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.1; }
+p, li, label { line-height: 1.5; }
+[data-testid="stSidebar"] { background: rgba(10, 12, 16, 0.82); backdrop-filter: blur(20px) saturate(180%); border-right: 1px solid rgba(255,255,255,0.08); }
+.block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
+div[data-testid="stMetric"] { background: rgba(255,255,255,0.04); backdrop-filter: blur(20px) saturate(180%); border: 1px solid rgba(255,255,255,0.08); border-top: 1px solid rgba(255,255,255,0.14); border-radius: 16px; padding: 14px 16px; }
+div[data-testid="stMetric"] label { letter-spacing: 0.01em; }
+div[data-testid="stExpander"] { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; }
+hr { border-color: rgba(255,255,255,0.08); }
+code { background: rgba(255,255,255,0.06) !important; border-radius: 6px; }
+/* Segmented-control tabs */
+div[data-testid="stTabs"] [role="tablist"] { background: rgba(255,255,255,0.06); border-radius: 12px; padding: 4px; gap: 4px; }
+div[data-testid="stTabs"] [role="tab"] { border-radius: 8px; transition: background 200ms ease-out, transform 100ms ease-out; }
+div[data-testid="stTabs"] [role="tab"][aria-selected="true"] { background: rgba(255,255,255,0.12); }
+/* Buttons: instant press feedback, critically-damped settle */
+button { transition: transform 100ms ease-out, background 200ms ease-out, opacity 200ms ease-out; }
+button:active { transform: scale(0.97); }
+/* Severity accents: solid colour on solid layers only */
+.sev-critical { color: #FF453A; font-weight: 600; }
+.sev-high { color: #FF9F0A; font-weight: 600; }
+.sev-medium { color: #FFD60A; font-weight: 600; }
+.sev-low { color: #30D158; font-weight: 600; }
+.sev-info { color: #64D2FF; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+  button, div[data-testid="stTabs"] [role="tab"] { transition: opacity 200ms ease; transform: none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  [data-testid="stSidebar"], div[data-testid="stMetric"], div[data-testid="stExpander"] { background: #12151B; backdrop-filter: none; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -156,12 +183,13 @@ k6.metric("🧠 Feedback Model",
 st.markdown("---")
 
 
-tab_live, tab_sim, tab_evtx, tab_intel, tab_queue = st.tabs([
+tab_live, tab_sim, tab_evtx, tab_intel, tab_queue, tab_detect = st.tabs([
     "🔴 Live Monitor",
     "🔧 Scenario Simulator",
     "📂 Log Investigation",
     "📊 Threat Intel",
     "📋 Triage Queue",
+    "📜 Detection Library",
 ])
 
 
@@ -410,6 +438,16 @@ Sysmon 1, 3, 7, 10, 11.
             for i, step in enumerate(inv.reasoning_steps, 1):
                 st.markdown(f"{i}. {step}")
 
+        _report_md = build_ir_report(inv, timeline=pr.timeline,
+                                     correlation=pr.correlation,
+                                     final_score=pr.final_score,
+                                     severity=pr.severity,
+                                     unique_ips=pr.unique_ips)
+        st.download_button("📄 Download IR report (Markdown)",
+                           data=_report_md,
+                           file_name=f"{inv.case_id}-ir-report.md",
+                           mime="text/markdown",
+                           key="evtx_ir_download")
         st.markdown("---")
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -569,7 +607,7 @@ with tab_queue:
 
     f1, f2, f3 = st.columns(3)
     with f1:
-        q_status = st.selectbox("Status", ["open", "investigating", "all",
+        q_status = st.selectbox("Status", ["open", "investigating", "escalated", "all",
                                            "closed_true_positive",
                                            "closed_false_positive",
                                            "suppressed"], key="q_status")
@@ -588,9 +626,11 @@ with tab_queue:
         for a in alerts:
             icon = {"Critical": "🔴", "High": "🟠",
                     "Medium": "🟡"}.get(a["severity"], "🟢")
+            _sla = sla_for_alert(a)
+            _badge = " ⚠ SLA" if _sla["overdue"] else ""
             header = (f"{icon} #{a['id']} · {a['alert_type'][:55]} · "
                       f"risk {a['risk_score']} · {a['source_ip']} · "
-                      f"`{a['status']}` · ×{a['event_count']}")
+                      f"`{a['status']}` · ×{a['event_count']}{_badge}")
             with st.expander(header):
                 c1, c2 = st.columns(2)
                 c1.markdown(f"**First seen:** {a['first_seen'][:19]}")
@@ -600,8 +640,15 @@ with tab_queue:
                     st.markdown(f"**Notes:** {a['notes']}")
                 if a["analyst"]:
                     st.caption(f"Last handled by {a['analyst']}")
+                _sla2 = sla_for_alert(a)
+                if _sla2["active"]:
+                    _age = (f"{_sla2['age_hours']:.1f}h"
+                            if _sla2["age_hours"] is not None else "age unknown")
+                    _flag = " ⚠ SLA BREACH" if _sla2["overdue"] else ""
+                    st.markdown(f"**SLA:** {_age} old · target "
+                                f"{_sla2['target_hours']}h{_flag}")
 
-                b1, b2, b3, b4 = st.columns(4)
+                b1, b2, b3, b4, b5 = st.columns(5)
                 note = st.text_input("Note (optional)", key=f"note_{a['id']}",
                                      label_visibility="collapsed",
                                      placeholder="Note (optional)")
@@ -617,6 +664,9 @@ with tab_queue:
                                              analyst, note)
                 if b4.button("🔕 Suppress", key=f"sup_{a['id']}"):
                     acted = store.set_status(a["id"], "suppressed",
+                                             analyst, note)
+                if b5.button("⬆ Escalate", key=f"esc_{a['id']}"):
+                    acted = store.set_status(a["id"], "escalated",
                                              analyst, note)
                 if acted:
                     retrained = feedback_model.maybe_retrain()
@@ -643,6 +693,44 @@ with tab_queue:
                 f"Triage alerts above as true/false positives to train it. "
                 f"Labels are your real decisions; the model learns which "
                 f"behavioral patterns you confirm.")
+
+
+# ════════════════════════════════════════════════════════════════════
+# TAB 6 — DETECTION LIBRARY (Sigma rules + first-pass SIEM translations)
+# ════════════════════════════════════════════════════════════════════
+with tab_detect:
+    st.subheader("📜 Detection Library")
+    st.caption("Sigma rules as the source of truth. SPL/KQL translations are "
+               "first-pass — hand-review field names against your SIEM schema "
+               "before deployment.")
+    try:
+        rules = load_detections()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Could not load detections: {e}")
+        rules = []
+    if not rules:
+        st.info("No detection rules found in detections/.")
+    else:
+        import yaml as _yaml
+        for r in rules:
+            header = (f"{r.get('title', '?')} · {str(r.get('level', '?')).upper()} · "
+                      f"{', '.join(r.get('tags', []))}")
+            with st.expander(header):
+                st.markdown(r.get("description", ""))
+                sigma_view = {k: r.get(k) for k in
+                              ("title", "id", "status", "description",
+                               "logsource", "detection", "falsepositives",
+                               "level", "tags")}
+                st.markdown("**Sigma**")
+                st.code(_yaml.safe_dump(sigma_view, sort_keys=False),
+                        language="yaml")
+                st.markdown("**Splunk SPL (first-pass)**")
+                st.code(r.get("spl", ""), language="spl")
+                st.markdown("**Sentinel KQL (first-pass)**")
+                st.code(r.get("kql", ""), language="kql")
+                st.markdown("**False positives to expect**")
+                for fp in r.get("falsepositives", []):
+                    st.markdown(f"• {fp}")
 
 
 # AUTO-REFRESH — at the END so the page renders first (no blocking sleep up top)

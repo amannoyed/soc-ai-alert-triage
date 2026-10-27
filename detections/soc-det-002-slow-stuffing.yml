@@ -1,0 +1,35 @@
+title: Slow Credential Stuffing
+id: 8a4b2d3f-0c5e-4b2f-9a3d-2e6f7b8c9d0e
+status: experimental
+description: >
+  Low-rate failed logons (4625) spread over an hour — designed to stay
+  under burst thresholds. Caught by counting distinct failure windows per
+  source IP, not by any single spike.
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+  condition: selection | count() by SourceIp > 10
+  timeframe: 1h
+falsepositives:
+  - Shared NAT egress with many legitimate users failing logons
+  - Password-manager replay after a credential rotation
+level: medium
+tags:
+  - attack.credential-access
+  - attack.t1110.004
+conversion_note: >
+  First-pass translation — hand-review field names against your SIEM
+  schema before deployment. Tune the count/timeframe pair to your
+  environment; raising the window without raising the count increases noise.
+spl: 'index=wineventlog EventCode=4625 | bucket _time span=1h | stats count by src_ip, _time | where count > 10'
+kql: 'SecurityEvent | where EventID == 4625 | summarize Failures = count() by IpAddress, bin(TimeGenerated, 1h) | where Failures > 10'
+tests:
+  positive:
+    EventID: 4625
+    SourceIp: 185.220.101.1
+  negative:
+    EventID: 4624
+    SourceIp: 185.220.101.1
